@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+release/
+coverage/
+.vite/
+.superpowers/
+*.local
+*.log
+dev-server.pid
+out/
+temp/
