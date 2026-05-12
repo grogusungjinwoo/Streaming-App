@@ -13,6 +13,7 @@ export type FfmpegRenderArgsOptions = {
   frameRate: number;
   videoBitsPerSecond: number;
   voicePatchStrength: number;
+  perfectPopStrength: number;
 };
 
 export type RenderMp4Options = Omit<FfmpegRenderArgsOptions, "inputPath" | "outputPath"> & {
@@ -28,6 +29,7 @@ export type RenderMp4RecordingOptions = {
   frameRate: number;
   videoBitsPerSecond: number;
   voicePatchStrength: number;
+  perfectPopStrength: number;
   useDesktopRenderer?: boolean;
   onProgress?: (progress: number) => void;
 };
@@ -48,6 +50,7 @@ type DesktopRenderBridge = {
       frameRate: number;
       videoBitsPerSecond: number;
       voicePatchStrength: number;
+      perfectPopStrength: number;
     }) => Promise<{
       data?: ArrayBuffer;
       error?: string;
@@ -85,24 +88,43 @@ export function clampRenderTrimRange(trimRange: RenderTrimRange, durationSeconds
   return { start, end };
 }
 
-export function buildAudioPatchFilter(strength: number): string {
+export function buildAudioPatchFilter(strength: number, perfectPopStrength = 0): string {
   const normalizedStrength = clamp(Number.isFinite(strength) ? strength : 0, 0, 1);
+  const normalizedPerfectPopStrength = clamp(Number.isFinite(perfectPopStrength) ? perfectPopStrength : 0, 0, 1);
 
-  if (normalizedStrength === 0) return "anull";
+  if (normalizedStrength === 0 && normalizedPerfectPopStrength === 0) return "anull";
 
-  const denoiseFloor = Math.round(-20 - normalizedStrength * 12);
-  const presenceGain = (1.5 + normalizedStrength * 2.5).toFixed(1);
-  const compressorThreshold = Math.round(-16 - normalizedStrength * 10);
-  const compressorRatio = (2 + normalizedStrength * 2.5).toFixed(1);
-  const makeupGain = (1 + normalizedStrength * 1.2).toFixed(1);
+  const highpassFrequency = Math.round(85 + normalizedPerfectPopStrength * 35);
+  const denoiseFloor = Math.round(-20 - normalizedStrength * 12 - normalizedPerfectPopStrength * 6);
+  const presenceGain = (1.5 + normalizedStrength * 2.5 + normalizedPerfectPopStrength * 0.8).toFixed(1);
+  const compressorThreshold = Math.round(-16 - normalizedStrength * 10 - normalizedPerfectPopStrength * 6);
+  const compressorRatio = (2 + normalizedStrength * 2.5 + normalizedPerfectPopStrength * 1.3).toFixed(1);
+  const makeupGain = (1 + normalizedStrength * 1.2 + normalizedPerfectPopStrength * 0.6).toFixed(1);
+  const filters = [
+    `highpass=f=${highpassFrequency}`,
+    `afftdn=nf=${denoiseFloor}`
+  ];
 
-  return [
-    "highpass=f=85",
-    `afftdn=nf=${denoiseFloor}`,
+  if (normalizedPerfectPopStrength > 0) {
+    const plosiveCut = (-(2 + normalizedPerfectPopStrength * 5)).toFixed(1);
+    const harshnessCut = (-(0.8 + normalizedPerfectPopStrength * 2.2)).toFixed(1);
+    const smootherThreshold = Math.round(-12 - normalizedPerfectPopStrength * 10);
+    const smootherRatio = (1.6 + normalizedPerfectPopStrength * 2.4).toFixed(1);
+
+    filters.push(
+      `equalizer=f=140:t=q:w=1:g=${plosiveCut}`,
+      `equalizer=f=5200:t=q:w=1.4:g=${harshnessCut}`,
+      `acompressor=threshold=${smootherThreshold}dB:ratio=${smootherRatio}:attack=3:release=90:makeup=1`
+    );
+  }
+
+  filters.push(
     `equalizer=f=3200:t=q:w=1.1:g=${presenceGain}`,
     `acompressor=threshold=${compressorThreshold}dB:ratio=${compressorRatio}:attack=8:release=160:makeup=${makeupGain}`,
     "alimiter=limit=0.93:attack=3:release=80"
-  ].join(",");
+  );
+
+  return filters.join(",");
 }
 
 export function buildFfmpegRenderArgs(options: FfmpegRenderArgsOptions): string[] {
@@ -130,7 +152,7 @@ export function buildFfmpegRenderArgs(options: FfmpegRenderArgsOptions): string[
     "-b:a",
     "192k"
   ];
-  const audioFilter = buildAudioPatchFilter(options.voicePatchStrength);
+  const audioFilter = buildAudioPatchFilter(options.voicePatchStrength, options.perfectPopStrength);
 
   if (audioFilter !== "anull") {
     args.push("-af", audioFilter);
@@ -160,7 +182,8 @@ export async function renderMp4(options: RenderMp4Options): Promise<RenderMp4Res
       trimRange: options.trimRange,
       frameRate: options.frameRate,
       videoBitsPerSecond: options.videoBitsPerSecond,
-      voicePatchStrength: options.voicePatchStrength
+      voicePatchStrength: options.voicePatchStrength,
+      perfectPopStrength: options.perfectPopStrength
     })
   );
 
@@ -191,7 +214,8 @@ export async function renderMp4Recording(sourceBlob: Blob, options: RenderMp4Rec
         trimRange: options.trimRange,
         frameRate: options.frameRate,
         videoBitsPerSecond: options.videoBitsPerSecond,
-        voicePatchStrength: options.voicePatchStrength
+        voicePatchStrength: options.voicePatchStrength,
+        perfectPopStrength: options.perfectPopStrength
       });
 
       if (result.error) throw new Error(result.error);
@@ -210,6 +234,7 @@ export async function renderMp4Recording(sourceBlob: Blob, options: RenderMp4Rec
     frameRate: options.frameRate,
     videoBitsPerSecond: options.videoBitsPerSecond,
     voicePatchStrength: options.voicePatchStrength,
+    perfectPopStrength: options.perfectPopStrength,
     onProgress: options.onProgress
   });
 

@@ -3,6 +3,7 @@ import {
   addMarker,
   buildQualityLayers,
   createInitialQualityMap,
+  getTrimDuration,
   setTrimRange,
   type QualitySample
 } from "./qualityMap";
@@ -20,6 +21,19 @@ describe("quality map", () => {
     const map = createInitialQualityMap(60);
 
     expect(setTrimRange(map, -5, 75).trimRange).toEqual({ start: 0, end: 60 });
+  });
+
+  it("keeps decimal trim seconds and calculates rendered duration", () => {
+    const map = setTrimRange(createInitialQualityMap(12), 1.25, 8.75);
+
+    expect(map.trimRange).toEqual({ start: 1.25, end: 8.75 });
+    expect(getTrimDuration(map)).toBeCloseTo(7.5);
+  });
+
+  it("falls back to safe trim bounds for non-finite seconds", () => {
+    const map = createInitialQualityMap(12);
+
+    expect(setTrimRange(map, Number.NaN, Number.POSITIVE_INFINITY).trimRange).toEqual({ start: 0, end: 12 });
   });
 
   it("translates telemetry samples into keyed streaming quality layers", () => {
@@ -40,4 +54,3 @@ describe("quality map", () => {
     );
   });
 });
-

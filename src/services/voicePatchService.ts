@@ -1,6 +1,7 @@
 export type VoicePatchSettings = {
   enabled: boolean;
   strength: number;
+  perfectPopStrength: number;
 };
 
 export type VoicePatchSession = {
@@ -23,8 +24,9 @@ function clamp(value: number, min: number, max: number): number {
 
 export function normalizeVoicePatchSettings(settings: VoicePatchSettings): VoicePatchSettings {
   const strength = clamp(Number.isFinite(settings.strength) ? settings.strength : 0, 0, 1);
+  const perfectPopStrength = clamp(Number.isFinite(settings.perfectPopStrength) ? settings.perfectPopStrength : 0, 0, 1);
 
-  return settings.enabled ? { enabled: true, strength } : { enabled: false, strength: 0 };
+  return settings.enabled ? { enabled: true, strength, perfectPopStrength } : { enabled: false, strength: 0, perfectPopStrength: 0 };
 }
 
 export function createVoicePatchSession(
@@ -35,7 +37,11 @@ export function createVoicePatchSession(
   const normalizedSettings = normalizeVoicePatchSettings(settings);
   const audioTracks = inputStream.getAudioTracks();
 
-  if (!normalizedSettings.enabled || normalizedSettings.strength === 0 || audioTracks.length === 0) {
+  if (
+    !normalizedSettings.enabled ||
+    (normalizedSettings.strength === 0 && normalizedSettings.perfectPopStrength === 0) ||
+    audioTracks.length === 0
+  ) {
     return {
       stream: inputStream,
       cleanup: async () => undefined
@@ -45,29 +51,46 @@ export function createVoicePatchSession(
   const audioContext = dependencies.createAudioContext?.() ?? createDefaultAudioContext();
   const source = audioContext.createMediaStreamSource(inputStream);
   const highpass = audioContext.createBiquadFilter();
+  const plosiveTamer = normalizedSettings.perfectPopStrength > 0 ? audioContext.createBiquadFilter() : null;
   const presence = audioContext.createBiquadFilter();
+  const harshnessTamer = normalizedSettings.perfectPopStrength > 0 ? audioContext.createBiquadFilter() : null;
   const gate = audioContext.createWaveShaper();
   const compressor = audioContext.createDynamicsCompressor();
   const limiter = audioContext.createDynamicsCompressor();
   const outputGain = audioContext.createGain();
   const destination = audioContext.createMediaStreamDestination();
   const strength = normalizedSettings.strength;
+  const perfectPopStrength = normalizedSettings.perfectPopStrength;
 
   highpass.type = "highpass";
-  highpass.frequency.value = 85;
+  highpass.frequency.value = 85 + perfectPopStrength * 35;
   highpass.Q.value = 0.7;
+
+  if (plosiveTamer) {
+    plosiveTamer.type = "peaking";
+    plosiveTamer.frequency.value = 140;
+    plosiveTamer.Q.value = 1;
+    plosiveTamer.gain.value = -(2 + perfectPopStrength * 5);
+  }
 
   presence.type = "peaking";
   presence.frequency.value = 3200;
   presence.Q.value = 1.1;
-  presence.gain.value = 1.5 + strength * 2.5;
+  presence.gain.value = 1.5 + strength * 2.5 + perfectPopStrength * 0.8;
 
-  gate.curve = createSoftGateCurve(strength);
+  if (harshnessTamer) {
+    harshnessTamer.type = "peaking";
+    harshnessTamer.frequency.value = 5200;
+    harshnessTamer.Q.value = 1.4;
+    harshnessTamer.gain.value = -(0.8 + perfectPopStrength * 2.2);
+  }
+
+  gate.curve = createSoftGateCurve(Math.max(strength, perfectPopStrength * 0.8));
   gate.oversample = "2x";
 
-  compressor.threshold.value = -16 - strength * 10;
+  compressor.threshold.value = -16 - strength * 10 - perfectPopStrength * 6;
   compressor.knee.value = 18;
-  compressor.ratio.value = 2 + strength * 2.5;
+  compressor.ratio.value = 2 + strength * 2.5 + perfectPopStrength * 1.3;
   compressor.attack.value = 0.008;
   compressor.release.value = 0.16;
 
@@ -77,21 +100,30 @@ export function createVoicePatchSession(
   limiter.attack.value = 0.003;
   limiter.release.value = 0.08;
 
-  outputGain.gain.value = 1 + strength * 0.08;
+  outputGain.gain.value = 1 + strength * 0.08 + perfectPopStrength * 0.04;
 
-  source.connect(highpass);
-  highpass.connect(presence);
-  presence.connect(gate);
-  gate.connect(compressor);
-  compressor.connect(limiter);
-  limiter.connect(outputGain);
-  outputGain.connect(destination);
+  const graphNodes: AudioNode[] = [
+    source,
+    highpass,
+    ...(plosiveTamer ? [plosiveTamer] : []),
+    presence,
+    ...(harshnessTamer ? [harshnessTamer] : []),
+    gate,
+    compressor,
+    limiter,
+    outputGain,
+    destination
+  ];
+
+  for (let index = 0; index < graphNodes.length - 1; index += 1) {
+    graphNodes[index].connect(graphNodes[index + 1]);
+  }
 
   const processedAudioTracks = destination.stream.getAudioTracks();
   const tracks = [...inputStream.getVideoTracks(), ...processedAudioTracks];
   const createMediaStream = dependencies.createMediaStream ?? ((streamTracks) => new MediaStream(streamTracks));
   const stream = createMediaStream(tracks);
-  const nodes: DisconnectableNode[] = [source, highpass, presence, gate, compressor, limiter, outputGain, destination];
+  const nodes: DisconnectableNode[] = graphNodes;
   let cleanedUp = false;
 
   return {

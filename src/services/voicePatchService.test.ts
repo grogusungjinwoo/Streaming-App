@@ -10,14 +10,47 @@ function createNode() {
 
 describe("voicePatchService", () => {
   it("normalizes AutoPatch settings to a safe broadcast range", () => {
-    expect(normalizeVoicePatchSettings({ enabled: true, strength: 1.8 })).toEqual({ enabled: true, strength: 1 });
-    expect(normalizeVoicePatchSettings({ enabled: false, strength: 0.8 })).toEqual({ enabled: false, strength: 0 });
+    expect(normalizeVoicePatchSettings({ enabled: true, strength: 1.8, perfectPopStrength: 2 })).toEqual({
+      enabled: true,
+      strength: 1,
+      perfectPopStrength: 1
+    });
+    expect(normalizeVoicePatchSettings({ enabled: false, strength: 0.8, perfectPopStrength: 0.7 })).toEqual({
+      enabled: false,
+      strength: 0,
+      perfectPopStrength: 0
+    });
+  });
+
+  it("bypasses the audio graph when both voice enhancers are disabled", async () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    const context = {
+      createMediaStreamSource: vi.fn(),
+      close
+    };
+    const inputStream = {
+      getVideoTracks: () => [{ id: "video" } as MediaStreamTrack],
+      getAudioTracks: () => [{ id: "raw-audio" } as MediaStreamTrack]
+    } as MediaStream;
+
+    const session = createVoicePatchSession(inputStream, { enabled: true, strength: 0, perfectPopStrength: 0 }, {
+      createAudioContext: () => context as unknown as AudioContext
+    });
+
+    expect(session.stream).toBe(inputStream);
+    expect(context.createMediaStreamSource).not.toHaveBeenCalled();
+
+    await session.cleanup();
+
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("creates a processed recording stream and closes the audio graph on cleanup", async () => {
     const source = createNode();
     const highpass = { ...createNode(), type: "", frequency: { value: 0 }, Q: { value: 0 } };
+    const plosiveTamer = { ...createNode(), type: "", frequency: { value: 0 }, gain: { value: 0 }, Q: { value: 0 } };
     const presence = { ...createNode(), type: "", frequency: { value: 0 }, gain: { value: 0 }, Q: { value: 0 } };
+    const harshnessTamer = { ...createNode(), type: "", frequency: { value: 0 }, gain: { value: 0 }, Q: { value: 0 } };
     const gate = { ...createNode(), curve: null as Float32Array | null, oversample: "none" as OverSampleType };
     const compressor = {
       ...createNode(),
@@ -45,7 +78,12 @@ describe("voicePatchService", () => {
     const close = vi.fn().mockResolvedValue(undefined);
     const context = {
       createMediaStreamSource: vi.fn(() => source),
-      createBiquadFilter: vi.fn().mockReturnValueOnce(highpass).mockReturnValueOnce(presence),
+      createBiquadFilter: vi
+        .fn()
+        .mockReturnValueOnce(highpass)
+        .mockReturnValueOnce(plosiveTamer)
+        .mockReturnValueOnce(presence)
+        .mockReturnValueOnce(harshnessTamer),
       createWaveShaper: vi.fn(() => gate),
       createDynamicsCompressor: vi.fn().mockReturnValueOnce(compressor).mockReturnValueOnce(limiter),
       createGain: vi.fn(() => outputGain),
@@ -58,7 +96,7 @@ describe("voicePatchService", () => {
     } as MediaStream;
     const createdStreams: MediaStreamTrack[][] = [];
 
-    const session = createVoicePatchSession(inputStream, { enabled: true, strength: 0.65 }, {
+    const session = createVoicePatchSession(inputStream, { enabled: true, strength: 0.65, perfectPopStrength: 0.75 }, {
       createAudioContext: () => context as unknown as AudioContext,
       createMediaStream: (tracks) => {
         createdStreams.push(tracks);
@@ -72,7 +110,11 @@ describe("voicePatchService", () => {
     expect(session.stream.getVideoTracks()).toEqual([videoTrack]);
     expect(session.stream.getAudioTracks()).toEqual([processedAudio]);
     expect(createdStreams[0]).toEqual([videoTrack, processedAudio]);
-    expect(context.createBiquadFilter).toHaveBeenCalledTimes(2);
+    expect(context.createBiquadFilter).toHaveBeenCalledTimes(4);
+    expect(plosiveTamer.type).toBe("peaking");
+    expect(plosiveTamer.gain.value).toBeLessThan(0);
+    expect(harshnessTamer.type).toBe("peaking");
+    expect(harshnessTamer.gain.value).toBeLessThan(0);
     expect(gate.curve).toBeInstanceOf(Float32Array);
 
     await session.cleanup();

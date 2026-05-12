@@ -55,13 +55,20 @@ export function addMarker(map: QualityMapState, timestamp: number, label: string
 }
 
 export function setTrimRange(map: QualityMapState, start: number, end: number): QualityMapState {
-  const clampedStart = Math.max(0, Math.min(start, map.duration));
-  const clampedEnd = Math.max(clampedStart, Math.min(end, map.duration));
+  const duration = Number.isFinite(map.duration) ? Math.max(0, map.duration) : 0;
+  const safeStart = Number.isFinite(start) ? start : 0;
+  const safeEnd = Number.isFinite(end) ? end : duration;
+  const clampedStart = Math.max(0, Math.min(safeStart, duration));
+  const clampedEnd = Math.max(clampedStart, Math.min(safeEnd, duration));
 
   return {
     ...map,
     trimRange: { start: clampedStart, end: clampedEnd }
   };
+}
+
+export function getTrimDuration(map: QualityMapState): number {
+  return Math.max(0, map.trimRange.end - map.trimRange.start);
 }
 
 export function buildQualityLayers(samples: QualitySample[]): QualityLayer[] {
@@ -107,4 +114,3 @@ export function buildQualityLayers(samples: QualitySample[]): QualityLayer[] {
     return layers;
   });
 }
-

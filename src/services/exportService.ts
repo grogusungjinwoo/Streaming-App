@@ -20,6 +20,7 @@ export type DesktopRenderPayload = {
   frameRate: number;
   videoBitsPerSecond: number;
   voicePatchStrength: number;
+  perfectPopStrength: number;
 };
 
 export type DesktopExportResult = {

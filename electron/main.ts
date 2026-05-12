@@ -23,6 +23,7 @@ type RenderPayload = {
   frameRate: number;
   videoBitsPerSecond: number;
   voicePatchStrength: number;
+  perfectPopStrength: number;
 };
 
 type SavePayload = {
@@ -95,6 +96,7 @@ ipcMain.handle("streaming-app:export-mp4", async (_event, payload: ExportPayload
       frameRate: 30,
       videoBitsPerSecond: 6_000_000,
       voicePatchStrength: 0.65,
+      perfectPopStrength: 0.75,
       useTrim: false
     });
     return { canceled: false, filePath: saveResult.filePath };
@@ -148,6 +150,7 @@ function runFfmpeg(
     frameRate: number;
     videoBitsPerSecond: number;
     voicePatchStrength: number;
+    perfectPopStrength: number;
     useTrim: boolean;
   }
 ): Promise<void> {
@@ -169,7 +172,7 @@ function runFfmpeg(
     "-vf",
     "format=yuv420p",
     "-af",
-    buildAudioPatchFilter(options.voicePatchStrength),
+    buildAudioPatchFilter(options.voicePatchStrength, options.perfectPopStrength),
     "-c:v",
     "libx264",
     "-preset",
@@ -205,21 +208,42 @@ function runFfmpeg(
   });
 }
 
-function buildAudioPatchFilter(strength: number): string {
+function buildAudioPatchFilter(strength: number, perfectPopStrength: number): string {
   const safeStrength = Math.max(0, Math.min(strength, 1));
-  if (safeStrength <= 0) return "anull";
+  const safePerfectPopStrength = Math.max(0, Math.min(perfectPopStrength, 1));
+  if (safeStrength <= 0 && safePerfectPopStrength <= 0) return "anull";
 
-  const threshold = Math.round(-28 + safeStrength * 10);
-  const ratio = (1.8 + safeStrength * 2.6).toFixed(1);
-  const noiseFloor = Math.round(-18 - safeStrength * 10);
+  const highpassFrequency = Math.round(85 + safePerfectPopStrength * 35);
+  const noiseFloor = Math.round(-20 - safeStrength * 12 - safePerfectPopStrength * 6);
+  const presenceGain = (1.5 + safeStrength * 2.5 + safePerfectPopStrength * 0.8).toFixed(1);
+  const compressorThreshold = Math.round(-16 - safeStrength * 10 - safePerfectPopStrength * 6);
+  const compressorRatio = (2 + safeStrength * 2.5 + safePerfectPopStrength * 1.3).toFixed(1);
+  const makeupGain = (1 + safeStrength * 1.2 + safePerfectPopStrength * 0.6).toFixed(1);
+  const filters = [
+    `highpass=f=${highpassFrequency}`,
+    `afftdn=nf=${noiseFloor}`
+  ];
 
-  return [
-    "highpass=f=85",
-    "equalizer=f=3200:t=q:w=1.1:g=2.2",
-    `afftdn=nf=${noiseFloor}`,
-    `acompressor=threshold=${threshold}dB:ratio=${ratio}:attack=8:release=140:makeup=2`,
+  if (safePerfectPopStrength > 0) {
+    const plosiveCut = (-(2 + safePerfectPopStrength * 5)).toFixed(1);
+    const harshnessCut = (-(0.8 + safePerfectPopStrength * 2.2)).toFixed(1);
+    const smootherThreshold = Math.round(-12 - safePerfectPopStrength * 10);
+    const smootherRatio = (1.6 + safePerfectPopStrength * 2.4).toFixed(1);
+
+    filters.push(
+      `equalizer=f=140:t=q:w=1:g=${plosiveCut}`,
+      `equalizer=f=5200:t=q:w=1.4:g=${harshnessCut}`,
+      `acompressor=threshold=${smootherThreshold}dB:ratio=${smootherRatio}:attack=3:release=90:makeup=1`
+    );
+  }
+
+  filters.push(
+    `equalizer=f=3200:t=q:w=1.1:g=${presenceGain}`,
+    `acompressor=threshold=${compressorThreshold}dB:ratio=${compressorRatio}:attack=8:release=160:makeup=${makeupGain}`,
     "alimiter=limit=0.92"
-  ].join(",");
+  );
+
+  return filters.join(",");
 }
 
 function formatSeconds(value: number): string {

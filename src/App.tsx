@@ -30,6 +30,7 @@ import {
   addMarker,
   buildQualityLayers,
   createInitialQualityMap,
+  getTrimDuration,
   setTrimRange,
   type QualityMapState,
   type QualitySample
@@ -72,6 +73,7 @@ export function App() {
   const [preset, setPreset] = useState<CapturePreset>(capturePresets[0]);
   const [frameRate, setFrameRate] = useState<FrameRateOption>(30);
   const [voicePatchStrength, setVoicePatchStrength] = useState(0.65);
+  const [perfectPopStrength, setPerfectPopStrength] = useState(0.75);
   const [codecChoice, setCodecChoice] = useState<CodecChoice>(() => getBrowserCodecChoice());
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -112,6 +114,7 @@ export function App() {
   const estimatedSize = estimateFileGrowth(elapsedSeconds, targetVideoBitsPerSecond + 160_000);
   const streamStatusText = getStatusText(status);
   const canDownloadMp4 = Boolean(renderedBlob && canDownloadRenderedMp4(reviewRender));
+  const trimDurationSeconds = getTrimDuration(qualityMap);
 
   useEffect(() => {
     void refreshDevices();
@@ -276,7 +279,11 @@ export function App() {
     recordingStartRef.current = Date.now();
     recorderRef.current = new RecorderService();
     try {
-      const voicePatchSession = createVoicePatchSession(stream, { enabled: true, strength: voicePatchStrength });
+      const voicePatchSession = createVoicePatchSession(stream, {
+        enabled: true,
+        strength: voicePatchStrength,
+        perfectPopStrength
+      });
       voicePatchSessionRef.current = voicePatchSession;
       recorderRef.current.start(voicePatchSession.stream, {
         mimeType: codecChoice.mimeType,
@@ -354,6 +361,11 @@ export function App() {
     markMp4ReviewStale();
   }
 
+  function updatePerfectPopStrength(value: string) {
+    setPerfectPopStrength(Number(value) / 100);
+    markMp4ReviewStale();
+  }
+
   function markMp4ReviewStale() {
     if (!recordedBlob) return;
     setReviewRender((current) => markReviewRenderStale(current));
@@ -380,6 +392,7 @@ export function App() {
         frameRate: renderFrameRate,
         videoBitsPerSecond: targetVideoBitsPerSecond,
         voicePatchStrength,
+        perfectPopStrength,
         useDesktopRenderer: canRenderOnDesktop,
         onProgress: (progress) => {
           setReviewRender({
@@ -396,7 +409,7 @@ export function App() {
       setStatus("review");
       setExportMessage({
         kind: "success",
-        text: "MP4 review is ready. You can preview it here, revise trim or AutoPatch, or download the rendered MP4."
+        text: "MP4 review is ready. You can preview it here, revise trim or voice polish, or download the rendered MP4."
       });
     } catch (renderError) {
       setStatus("review");
@@ -569,6 +582,21 @@ export function App() {
             />
             <strong className="autopatch-value">Broadcast {Math.round(voicePatchStrength * 100)}%</strong>
           </label>
+          <label className="autopatch-control">
+            <span>
+              <Radio size={14} />
+              Perfect Pop Filter
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={Math.round(perfectPopStrength * 100)}
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              onChange={(event) => updatePerfectPopStrength(event.target.value)}
+            />
+            <strong className="autopatch-value">Pop {Math.round(perfectPopStrength * 100)}%</strong>
+          </label>
           <div className="source-stats">
             <Metric label="Requested" value={`${preset.width}x${preset.height}`} />
             <Metric label="Frame rate" value={`${frameRate} fps`} />
@@ -604,6 +632,7 @@ export function App() {
         <aside className="panel signal-rail">
           <PanelHeader icon={<Gauge size={16} />} title="Signal Intelligence" />
           <LiveMeter label="AutoPatch" value={voicePatchStrength} />
+          <LiveMeter label="Perfect Pop" value={perfectPopStrength} />
           <LiveMeter label="Audio peak" value={audioTelemetry.peak} danger={audioTelemetry.isClipping} />
           <LiveMeter label="RMS" value={audioTelemetry.rms} />
           <LiveMeter label="Noise floor" value={audioTelemetry.noiseFloor} warning={audioTelemetry.noiseFloor > 0.35} />
@@ -631,30 +660,60 @@ export function App() {
           </div>
           <QualityTerrain duration={Math.max(qualityMap.duration, 1)} layers={qualityLayers} markers={qualityMap.markers} />
           <div className="trim-controls">
-            <label>
-              Trim start
+            <label className="trim-control">
+              <span>Start moves to</span>
+              <div className="trim-second-row">
+                <input
+                  className="trim-second-input"
+                  type="number"
+                  min="0"
+                  max={Math.max(qualityMap.duration, 1)}
+                  step="0.1"
+                  value={formatSecondsInput(qualityMap.trimRange.start)}
+                  disabled={!recordedBlob || status === "rendering"}
+                  onChange={(event) => updateTrimStart(event.target.value)}
+                  aria-label="Trim start seconds"
+                />
+                <small>sec</small>
+              </div>
               <input
                 type="range"
                 min="0"
                 max={Math.max(qualityMap.duration, 1)}
+                step="0.1"
                 value={qualityMap.trimRange.start}
                 disabled={!recordedBlob || status === "rendering"}
                 onChange={(event) => updateTrimStart(event.target.value)}
               />
             </label>
-            <label>
-              Trim end
+            <label className="trim-control">
+              <span>End moves to</span>
+              <div className="trim-second-row">
+                <input
+                  className="trim-second-input"
+                  type="number"
+                  min="0"
+                  max={Math.max(qualityMap.duration, 1)}
+                  step="0.1"
+                  value={formatSecondsInput(qualityMap.trimRange.end)}
+                  disabled={!recordedBlob || status === "rendering"}
+                  onChange={(event) => updateTrimEnd(event.target.value)}
+                  aria-label="Trim end seconds"
+                />
+                <small>sec</small>
+              </div>
               <input
                 type="range"
                 min="0"
                 max={Math.max(qualityMap.duration, 1)}
+                step="0.1"
                 value={qualityMap.trimRange.end}
                 disabled={!recordedBlob || status === "rendering"}
                 onChange={(event) => updateTrimEnd(event.target.value)}
               />
             </label>
-            <span>
-              Range {formatTime(qualityMap.trimRange.start)} to {formatTime(qualityMap.trimRange.end)}
+            <span className="render-length">
+              Rendered length {formatSecondsInput(trimDurationSeconds)} sec
             </span>
           </div>
           <div
@@ -837,7 +896,7 @@ function getStatusText(status: RecorderStatus): string {
 function getReviewStatusText(reviewRender: ReviewRenderState, canSaveOnDesktop: boolean): string {
   if (reviewRender.status === "ready") return canSaveOnDesktop ? "Rendered MP4 ready to save" : "Rendered MP4 ready to download";
   if (reviewRender.status === "rendering") return reviewRender.message || "Rendering local MP4 review";
-  if (reviewRender.status === "stale") return "Render a fresh MP4 to use the latest trim and AutoPatch settings";
+  if (reviewRender.status === "stale") return "Render a fresh MP4 to use the latest trim and voice settings";
   if (reviewRender.status === "error") return reviewRender.error || "MP4 render needs attention";
   return "Stop a recording to create an MP4 review";
 }
@@ -854,4 +913,8 @@ function formatTime(seconds: number): string {
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatSecondsInput(seconds: number): string {
+  return (Number.isFinite(seconds) ? Math.max(0, seconds) : 0).toFixed(1);
 }

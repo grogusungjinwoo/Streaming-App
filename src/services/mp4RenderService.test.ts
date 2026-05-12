@@ -14,7 +14,8 @@ describe("mp4RenderService", () => {
       trimRange: { start: 2, end: 8 },
       frameRate: 60,
       videoBitsPerSecond: 9_000_000,
-      voicePatchStrength: 0.7
+      voicePatchStrength: 0.7,
+      perfectPopStrength: 0
     });
 
     expect(args).toEqual(
@@ -39,7 +40,7 @@ describe("mp4RenderService", () => {
     expect(args[args.indexOf("-b:v") + 1]).toBe("9000k");
   });
 
-  it("scales the broadcast voice filter by AutoPatch strength", () => {
+  it("preserves the broadcast voice filter when Perfect Pop Filter is off", () => {
     expect(buildAudioPatchFilter(0)).toBe("anull");
 
     const filter = buildAudioPatchFilter(0.75);
@@ -48,5 +49,15 @@ describe("mp4RenderService", () => {
     expect(filter).toContain("afftdn");
     expect(filter).toContain("acompressor");
     expect(filter).toContain("alimiter");
+    expect(filter).not.toContain("f=140");
+  });
+
+  it("adds pop-filter smoothing when Perfect Pop Filter is enabled", () => {
+    const filter = buildAudioPatchFilter(0.65, 0.75);
+
+    expect(filter).toContain("highpass=f=111");
+    expect(filter).toContain("equalizer=f=140");
+    expect(filter).toContain("equalizer=f=5200");
+    expect(filter.match(/acompressor/g)).toHaveLength(2);
   });
 });
