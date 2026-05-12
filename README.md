@@ -1,19 +1,21 @@
 # Streaming App
 
-Streaming App is a local-first camera recorder with a professional control-room interface. It is designed to run as a GitHub Pages web app and as an Electron PC app with guaranteed MP4 export.
+Streaming App is a local-first camera recorder with a professional control-room interface. It is designed to run as a GitHub Pages web app and as an Electron PC app with on-device MP4 review and export.
 
 ## What It Does
 
 - Requests camera and microphone access only after the user clicks **Enable preview**.
 - Records locally with `MediaRecorder`.
+- Offers an explicit 30 FPS / 60 FPS capture choice before preview. The app requests the selected frame rate and reports the actual delivered/negotiated FPS when the device or browser falls back.
+- Applies **AutoPatch** voice polish before recording: high-pass cleanup, presence EQ, soft gating, compression, and limiting for a smoother broadcast-style voice.
 - Detects the real browser recording format with `MediaRecorder.isTypeSupported()`.
-- Downloads the correct web format: MP4 where supported, WebM fallback where MP4 is unavailable.
-- Reuses the same React UI in Electron for desktop-grade MP4 export through bundled FFmpeg.
-- Shows live audio meters, actual stream settings, estimated file size, markers, trim range, and a quality terrain timeline.
+- Renders a reviewed MP4 after **Stop** before download/save. Browser mode uses FFmpeg.wasm locally; Electron uses bundled native FFmpeg.
+- Lets users preview the rendered MP4, revise trim and AutoPatch strength, rerender, then download/save only the current MP4.
+- Shows live audio meters, AutoPatch strength, actual stream settings, estimated file size, markers, trim range, render progress, and a quality terrain timeline.
 
 ## Privacy Model
 
-The app has no backend and no upload workflow. Camera streams, microphone streams, recording blobs, object URLs, markers, and export data stay on the local device. The GitHub Pages build serves static files only.
+The app has no backend and no upload workflow. Camera streams, microphone streams, recording blobs, FFmpeg render data, object URLs, markers, and export data stay on the local device. The GitHub Pages build serves static files only.
 
 ## Development
 
@@ -32,9 +34,11 @@ npm run build
 npm run electron:build
 ```
 
-## Desktop MP4 Export
+## MP4 Review And Export
 
-The Electron app exposes a secure preload bridge named `window.streamingApp`. The renderer sends the recorded blob bytes to the main process, which writes a temporary local input file and runs bundled FFmpeg with argument arrays, not shell string interpolation. The temporary directory is removed after export succeeds or fails.
+After Stop, the app renders a local review MP4 from the captured blob, trim range, FPS target, bitrate, and AutoPatch strength. Download/save is disabled until the latest settings have been rendered.
+
+In the browser, FFmpeg.wasm is lazy-loaded from bundled `@ffmpeg/ffmpeg`, `@ffmpeg/util`, and single-thread `@ffmpeg/core` assets. In Electron, the secure preload bridge exposes `renderMp4` and `saveMp4`; the main process writes temporary local input/output files and runs bundled FFmpeg with argument arrays, not shell string interpolation. Temporary directories are removed after render succeeds or fails.
 
 ```bash
 npm run electron:dev
@@ -49,4 +53,3 @@ https://grogusungjinwoo.github.io/Streaming-App/
 ```
 
 Enable Pages in the repository settings with **GitHub Actions** as the source.
-

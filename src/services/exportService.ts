@@ -4,20 +4,48 @@ export type DesktopExportPayload = {
   suggestedName: string;
 };
 
+export type DesktopSavePayload = {
+  data: ArrayBuffer;
+  suggestedName: string;
+};
+
+export type DesktopRenderPayload = {
+  data: ArrayBuffer;
+  inputExtension: string;
+  suggestedName: string;
+  trimRange: {
+    start: number;
+    end: number;
+  };
+  frameRate: number;
+  videoBitsPerSecond: number;
+  voicePatchStrength: number;
+};
+
 export type DesktopExportResult = {
   canceled: boolean;
   filePath?: string;
   error?: string;
 };
 
+export type DesktopRenderResult = {
+  data?: ArrayBuffer;
+  canceled?: boolean;
+  error?: string;
+};
+
 export type StreamingAppBridge = {
-  exportMp4: (payload: DesktopExportPayload) => Promise<DesktopExportResult>;
+  exportMp4?: (payload: DesktopExportPayload) => Promise<DesktopExportResult>;
+  saveMp4?: (payload: DesktopSavePayload) => Promise<DesktopExportResult>;
+  renderMp4?: (payload: DesktopRenderPayload) => Promise<DesktopRenderResult>;
   isDesktop: boolean;
 };
 
 export type BridgeWindow = Window & {
   streamingApp?: Partial<StreamingAppBridge>;
 };
+
+installBlobArrayBufferFallback();
 
 export function buildExportFileName(title: string, extension: string, date = new Date()): string {
   const cleanedTitle = title
@@ -32,8 +60,16 @@ export function buildExportFileName(title: string, extension: string, date = new
   return `${safeTitle}-${timestamp}.${extension}`;
 }
 
-export function canUseDesktopExporter(target: { streamingApp?: { exportMp4?: unknown } } = window): boolean {
-  return typeof target.streamingApp?.exportMp4 === "function";
+export function canUseDesktopExporter(target: unknown = window): boolean {
+  return typeof getBridge(target).exportMp4 === "function";
+}
+
+export function canUseDesktopSaver(target: unknown = window): boolean {
+  return typeof getBridge(target).saveMp4 === "function";
+}
+
+export function canUseDesktopRenderer(target: unknown = window): boolean {
+  return typeof getBridge(target).renderMp4 === "function";
 }
 
 export function downloadRecording(blob: Blob, fileName: string): void {
@@ -52,9 +88,11 @@ export async function exportRecording(
   fileName: string,
   target: BridgeWindow = window
 ): Promise<DesktopExportResult> {
+  const bridge = getBridge(target);
+
   if (canUseDesktopExporter(target)) {
-    return target.streamingApp!.exportMp4!({
-      data: await blob.arrayBuffer(),
+    return bridge.exportMp4!({
+      data: await blobToArrayBuffer(blob),
       inputExtension: blob.type.includes("mp4") ? "mp4" : "webm",
       suggestedName: fileName.replace(/\.[^.]+$/, ".mp4")
     });
@@ -62,4 +100,45 @@ export async function exportRecording(
 
   downloadRecording(blob, fileName);
   return { canceled: false };
+}
+
+export async function saveRenderedMp4(
+  blob: Blob,
+  fileName: string,
+  target: BridgeWindow = window
+): Promise<DesktopExportResult> {
+  const bridge = getBridge(target);
+
+  if (canUseDesktopSaver(target)) {
+    return bridge.saveMp4!({
+      data: await blobToArrayBuffer(blob),
+      suggestedName: fileName.replace(/\.[^.]+$/, ".mp4")
+    });
+  }
+
+  downloadRecording(blob, fileName.replace(/\.[^.]+$/, ".mp4"));
+  return { canceled: false };
+}
+
+async function blobToArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === "function") {
+    return blob.arrayBuffer();
+  }
+
+  return new Response(blob).arrayBuffer();
+}
+
+function installBlobArrayBufferFallback(): void {
+  if (typeof Blob === "undefined" || typeof Blob.prototype.arrayBuffer === "function") return;
+
+  Object.defineProperty(Blob.prototype, "arrayBuffer", {
+    configurable: true,
+    value(this: Blob) {
+      return new Response(this).arrayBuffer();
+    }
+  });
+}
+
+function getBridge(target: unknown): Partial<StreamingAppBridge> {
+  return ((target as { streamingApp?: Partial<StreamingAppBridge> }).streamingApp ?? {}) as Partial<StreamingAppBridge>;
 }

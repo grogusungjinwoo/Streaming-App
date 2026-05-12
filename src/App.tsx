@@ -5,7 +5,6 @@ import {
   Download,
   Gauge,
   Map,
-  Mic,
   Pause,
   Play,
   Radio,
@@ -17,12 +16,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildCaptureConstraints,
   capturePresets,
+  frameRateOptions,
+  getVideoBitsPerSecond,
   listMediaDevices,
   type CapturePreset,
-  type DeviceOption
+  type DeviceOption,
+  type FrameRateOption
 } from "./services/deviceService";
-import { buildExportFileName, canUseDesktopExporter, exportRecording } from "./services/exportService";
+import { buildExportFileName, canUseDesktopRenderer, canUseDesktopSaver, saveRenderedMp4 } from "./services/exportService";
 import { getBrowserCodecChoice, type CodecChoice } from "./services/codecSupport";
+import { getBlobInputExtension, renderMp4Recording } from "./services/mp4RenderService";
 import {
   addMarker,
   buildQualityLayers,
@@ -33,13 +36,22 @@ import {
 } from "./services/qualityMap";
 import { RecorderService } from "./services/recorderService";
 import {
+  canDownloadRenderedMp4,
+  createReviewRenderState,
+  markReviewRenderReady,
+  markReviewRenderStale,
+  type ReviewRenderState
+} from "./services/reviewState";
+import {
+  calculateEstimatedFps,
   calculateAudioTelemetry,
   describeStreamSettings,
   estimateFileGrowth,
   type AudioTelemetry
 } from "./services/telemetryService";
+import { createVoicePatchSession, type VoicePatchSession } from "./services/voicePatchService";
 
-type RecorderStatus = "idle" | "preview" | "recording" | "paused" | "review" | "exporting" | "error";
+type RecorderStatus = "idle" | "preview" | "recording" | "paused" | "rendering" | "review" | "exporting" | "error";
 
 type ExportMessage = {
   kind: "info" | "success" | "warning" | "error";
@@ -58,14 +70,20 @@ export function App() {
   const [selectedCameraId, setSelectedCameraId] = useState("");
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
   const [preset, setPreset] = useState<CapturePreset>(capturePresets[0]);
+  const [frameRate, setFrameRate] = useState<FrameRateOption>(30);
+  const [voicePatchStrength, setVoicePatchStrength] = useState(0.65);
   const [codecChoice, setCodecChoice] = useState<CodecChoice>(() => getBrowserCodecChoice());
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [renderedBlob, setRenderedBlob] = useState<Blob | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
+  const [actualFrameRate, setActualFrameRate] = useState<FrameRateOption | number>(30);
+  const [deliveredFps, setDeliveredFps] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [qualityMap, setQualityMap] = useState<QualityMapState>(() => createInitialQualityMap());
   const [qualitySamples, setQualitySamples] = useState<QualitySample[]>([]);
+  const [reviewRender, setReviewRender] = useState<ReviewRenderState>(() => createReviewRenderState());
   const [audioTelemetry, setAudioTelemetry] = useState<AudioTelemetry>(initialAudioTelemetry);
   const [actualSettings, setActualSettings] = useState("No active capture");
   const [error, setError] = useState("");
@@ -75,19 +93,25 @@ export function App() {
   });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const reviewStatusRef = useRef<HTMLDivElement | null>(null);
   const recorderRef = useRef<RecorderService | null>(null);
+  const voicePatchSessionRef = useRef<VoicePatchSession | null>(null);
   const recordingStartRef = useRef<number>(0);
   const objectUrlRef = useRef("");
   const latestAudioRef = useRef<AudioTelemetry>(initialAudioTelemetry);
 
   const cameraDevices = devices.filter((device) => device.kind === "videoinput");
   const microphoneDevices = devices.filter((device) => device.kind === "audioinput");
-  const isDesktop = canUseDesktopExporter();
+  const canRenderOnDesktop = canUseDesktopRenderer();
+  const canSaveOnDesktop = canUseDesktopSaver();
+  const isDesktop = canRenderOnDesktop || canSaveOnDesktop;
   const qualityLayers = useMemo(() => buildQualityLayers(qualitySamples), [qualitySamples]);
-  const selectedFormat = isDesktop ? "Desktop MP4" : codecChoice.label;
-  const actualFileExtension = isDesktop ? "mp4" : codecChoice.extension;
-  const estimatedSize = estimateFileGrowth(elapsedSeconds, preset.videoBitsPerSecond + 160_000);
+  const selectedFormat = isDesktop ? "Desktop MP4 render" : "Browser MP4 render";
+  const targetVideoBitsPerSecond = getVideoBitsPerSecond(preset, frameRate);
+  const renderFrameRate = Math.max(1, Math.round(Math.min(frameRate, deliveredFps || actualFrameRate || frameRate)));
+  const estimatedSize = estimateFileGrowth(elapsedSeconds, targetVideoBitsPerSecond + 160_000);
   const streamStatusText = getStatusText(status);
+  const canDownloadMp4 = Boolean(renderedBlob && canDownloadRenderedMp4(reviewRender));
 
   useEffect(() => {
     void refreshDevices();
@@ -98,6 +122,43 @@ export function App() {
     if (!videoRef.current) return;
     videoRef.current.srcObject = stream;
   }, [stream]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !stream || (status !== "preview" && status !== "recording" && status !== "paused")) {
+      setDeliveredFps(0);
+      return;
+    }
+
+    if (typeof video.requestVideoFrameCallback !== "function") return;
+
+    let frameCallback = 0;
+    let stopped = false;
+    const timestamps: number[] = [];
+
+    const readFrame: VideoFrameRequestCallback = (timestamp) => {
+      timestamps.push(timestamp);
+      if (timestamps.length > 40) timestamps.shift();
+      const nextFps = calculateEstimatedFps(timestamps);
+      if (nextFps > 0) setDeliveredFps(Math.round(nextFps));
+      if (!stopped) frameCallback = video.requestVideoFrameCallback(readFrame);
+    };
+
+    frameCallback = video.requestVideoFrameCallback(readFrame);
+
+    return () => {
+      stopped = true;
+      if (frameCallback && typeof video.cancelVideoFrameCallback === "function") {
+        video.cancelVideoFrameCallback(frameCallback);
+      }
+    };
+  }, [status, stream]);
+
+  useEffect(() => {
+    if (reviewRender.status === "ready" || reviewRender.status === "error") {
+      reviewStatusRef.current?.focus();
+    }
+  }, [reviewRender.status, reviewRender.version]);
 
   useEffect(() => {
     if (!stream || (status !== "preview" && status !== "recording" && status !== "paused")) return;
@@ -143,16 +204,16 @@ export function App() {
             timestamp: nextElapsed,
             audioPeak: latestAudioRef.current.peak,
             noiseFloor: latestAudioRef.current.noiseFloor,
-            fps: stream?.getVideoTracks()[0]?.getSettings().frameRate ?? preset.frameRate,
-            targetFps: preset.frameRate,
-            bitrate: preset.videoBitsPerSecond
+            fps: deliveredFps || stream?.getVideoTracks()[0]?.getSettings().frameRate || frameRate,
+            targetFps: frameRate,
+            bitrate: targetVideoBitsPerSecond
           }
         ].slice(-180)
       );
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [preset.frameRate, preset.videoBitsPerSecond, status, stream]);
+  }, [deliveredFps, frameRate, status, stream, targetVideoBitsPerSecond]);
 
   useEffect(() => {
     return () => {
@@ -178,11 +239,13 @@ export function App() {
     try {
       stream?.getTracks().forEach((track) => track.stop());
       const nextStream = await navigator.mediaDevices.getUserMedia(
-        buildCaptureConstraints(preset, selectedCameraId, selectedMicrophoneId)
+        buildCaptureConstraints(preset, frameRate, selectedCameraId, selectedMicrophoneId)
       );
       setStream(nextStream);
       setStatus("preview");
       setRecordedBlob(null);
+      setRenderedBlob(null);
+      setReviewRender(createReviewRenderState());
       clearObjectUrl();
       updateActualSettings(nextStream);
       await refreshDevices();
@@ -204,23 +267,34 @@ export function App() {
     }
 
     setRecordedBlob(null);
+    setRenderedBlob(null);
+    setReviewRender(createReviewRenderState());
     clearObjectUrl();
     setQualitySamples([]);
     setQualityMap(createInitialQualityMap());
     setElapsedSeconds(0);
     recordingStartRef.current = Date.now();
     recorderRef.current = new RecorderService();
-    recorderRef.current.start(stream, {
-      mimeType: codecChoice.mimeType,
-      videoBitsPerSecond: preset.videoBitsPerSecond,
-      audioBitsPerSecond: 160_000
-    });
+    try {
+      const voicePatchSession = createVoicePatchSession(stream, { enabled: true, strength: voicePatchStrength });
+      voicePatchSessionRef.current = voicePatchSession;
+      recorderRef.current.start(voicePatchSession.stream, {
+        mimeType: codecChoice.mimeType,
+        videoBitsPerSecond: targetVideoBitsPerSecond,
+        audioBitsPerSecond: 160_000
+      });
+    } catch (recordingError) {
+      recorderRef.current = null;
+      setStatus("error");
+      setError(recordingError instanceof Error ? recordingError.message : "Unable to create the AutoPatch audio graph.");
+      return;
+    }
     setStatus("recording");
     setExportMessage({
       kind: codecChoice.isFallback ? "warning" : "info",
       text: codecChoice.isFallback
-        ? "This browser is recording WebM. The PC app can convert the result to MP4."
-        : "This browser supports native MP4 recording for web export."
+        ? "This browser is capturing WebM, then rendering an MP4 locally after you stop."
+        : "This browser supports native MP4 capture. The review render still creates the final MP4."
     });
   }
 
@@ -239,18 +313,19 @@ export function App() {
     if (!recorderRef.current) return;
     const result = await recorderRef.current.stop();
     recorderRef.current.cleanup();
+    await voicePatchSessionRef.current?.cleanup();
+    voicePatchSessionRef.current = null;
     stream?.getTracks().forEach((track) => track.stop());
     setStream(null);
     setRecordedBlob(result.blob);
-    const url = URL.createObjectURL(result.blob);
-    objectUrlRef.current = url;
-    setPreviewUrl(url);
-    setStatus("review");
-    setQualityMap((current) => ({ ...current, duration: elapsedSeconds, trimRange: { start: 0, end: elapsedSeconds } }));
+    const duration = Math.max(elapsedSeconds, Math.round((Date.now() - recordingStartRef.current) / 1000));
+    const trimRange = { start: 0, end: duration };
+    setQualityMap((current) => ({ ...current, duration, trimRange }));
     setExportMessage({
-      kind: "success",
-      text: `Recording ready for local ${isDesktop ? "MP4 export" : `${codecChoice.extension.toUpperCase()} download`}. Camera and microphone tracks were released.`
+      kind: "info",
+      text: "Recording captured. Rendering the local MP4 review file now."
     });
+    await renderReviewMp4(result.blob, trimRange);
   }
 
   function addTimelineMarker() {
@@ -259,20 +334,92 @@ export function App() {
   }
 
   function updateTrimStart(value: string) {
-    setQualityMap((current) => setTrimRange(current, Number(value), current.trimRange.end));
+    markMp4ReviewStale();
+    setQualityMap((current) => {
+      const next = setTrimRange(current, Number(value), current.trimRange.end);
+      return next;
+    });
   }
 
   function updateTrimEnd(value: string) {
-    setQualityMap((current) => setTrimRange(current, current.trimRange.start, Number(value)));
+    markMp4ReviewStale();
+    setQualityMap((current) => {
+      const next = setTrimRange(current, current.trimRange.start, Number(value));
+      return next;
+    });
+  }
+
+  function updateVoicePatchStrength(value: string) {
+    setVoicePatchStrength(Number(value) / 100);
+    markMp4ReviewStale();
+  }
+
+  function markMp4ReviewStale() {
+    if (!recordedBlob) return;
+    setReviewRender((current) => markReviewRenderStale(current));
+    setExportMessage({
+      kind: "warning",
+      text: "Review settings changed. Render a fresh MP4 before downloading."
+    });
+  }
+
+  async function renderReviewMp4(sourceBlob = recordedBlob, trimRange = qualityMap.trimRange) {
+    if (!sourceBlob) return;
+    setStatus("rendering");
+    setReviewRender({
+      status: "rendering",
+      progress: 0,
+      message: "Rendering MP4 review locally..."
+    });
+    setRenderedBlob(null);
+
+    try {
+      const mp4Blob = await renderMp4Recording(sourceBlob, {
+        inputExtension: getBlobInputExtension(sourceBlob, codecChoice.extension),
+        trimRange,
+        frameRate: renderFrameRate,
+        videoBitsPerSecond: targetVideoBitsPerSecond,
+        voicePatchStrength,
+        useDesktopRenderer: canRenderOnDesktop,
+        onProgress: (progress) => {
+          setReviewRender({
+            status: "rendering",
+            progress,
+            message: `Rendering MP4 review ${Math.round(progress * 100)}%`
+          });
+        }
+      });
+
+      setRenderedBlob(mp4Blob);
+      setVideoPreviewBlob(mp4Blob);
+      setReviewRender(markReviewRenderReady(createReviewRenderState(), mp4Blob));
+      setStatus("review");
+      setExportMessage({
+        kind: "success",
+        text: "MP4 review is ready. You can preview it here, revise trim or AutoPatch, or download the rendered MP4."
+      });
+    } catch (renderError) {
+      setStatus("review");
+      setVideoPreviewBlob(sourceBlob);
+      setReviewRender({
+        status: "error",
+        progress: 0,
+        error: renderError instanceof Error ? renderError.message : "MP4 render failed."
+      });
+      setExportMessage({
+        kind: "error",
+        text: renderError instanceof Error ? renderError.message : "MP4 render failed. The original recording is still available in this session."
+      });
+    }
   }
 
   async function handleExport() {
-    if (!recordedBlob) return;
+    if (!renderedBlob || !canDownloadRenderedMp4(reviewRender)) return;
     setStatus("exporting");
-    const fileName = buildExportFileName("streaming-app-recording", actualFileExtension);
+    const fileName = buildExportFileName("streaming-app-recording", "mp4");
 
     try {
-      const result = await exportRecording(recordedBlob, fileName);
+      const result = await saveRenderedMp4(renderedBlob, fileName);
       setStatus("review");
       if (result.canceled) {
         setExportMessage({ kind: "info", text: "Export canceled. The recording is still available in this session." });
@@ -293,12 +440,21 @@ export function App() {
   function discardRecording() {
     clearObjectUrl();
     setRecordedBlob(null);
+    setRenderedBlob(null);
     setPreviewUrl("");
     setElapsedSeconds(0);
     setQualitySamples([]);
     setQualityMap(createInitialQualityMap());
+    setReviewRender(createReviewRenderState());
     setStatus("idle");
     setExportMessage({ kind: "info", text: "Recording discarded locally and object URL revoked." });
+  }
+
+  function setVideoPreviewBlob(blob: Blob) {
+    clearObjectUrl();
+    const url = URL.createObjectURL(blob);
+    objectUrlRef.current = url;
+    setPreviewUrl(url);
   }
 
   function clearObjectUrl() {
@@ -314,8 +470,9 @@ export function App() {
       setActualSettings("No video track settings reported");
       return;
     }
+    setActualFrameRate(settings.frameRate ?? frameRate);
     const description = describeStreamSettings(
-      { width: preset.width, height: preset.height, frameRate: preset.frameRate },
+      { width: preset.width, height: preset.height, frameRate },
       settings
     );
     setActualSettings(`${description.actual} actual · requested ${description.requested}`);
@@ -363,8 +520,12 @@ export function App() {
           <label>
             Quality preset
             <select
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
               value={preset.label}
-              onChange={(event) => setPreset(capturePresets.find((item) => item.label === event.target.value) ?? capturePresets[0])}
+              onChange={(event) => {
+                setPreset(capturePresets.find((item) => item.label === event.target.value) ?? capturePresets[0]);
+                markMp4ReviewStale();
+              }}
             >
               {capturePresets.map((item) => (
                 <option key={item.label} value={item.label}>
@@ -373,12 +534,47 @@ export function App() {
               ))}
             </select>
           </label>
+          <div className="frame-rate-control" role="group" aria-label="Frame rate">
+            <span>Frame rate</span>
+            <div className="frame-rate-options">
+              {frameRateOptions.map((option) => (
+                <button
+                  key={option}
+                  className={`frame-rate-button ${frameRate === option ? "active" : ""}`}
+                  type="button"
+                  disabled={status === "recording" || status === "paused" || status === "rendering"}
+                  aria-pressed={frameRate === option}
+                  onClick={() => {
+                    setFrameRate(option);
+                    markMp4ReviewStale();
+                  }}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="autopatch-control">
+            <span>
+              <AudioLines size={14} />
+              AutoPatch
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={Math.round(voicePatchStrength * 100)}
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              onChange={(event) => updateVoicePatchStrength(event.target.value)}
+            />
+            <strong className="autopatch-value">Broadcast {Math.round(voicePatchStrength * 100)}%</strong>
+          </label>
           <div className="source-stats">
             <Metric label="Requested" value={`${preset.width}x${preset.height}`} />
-            <Metric label="Frame rate" value={`${preset.frameRate} fps`} />
-            <Metric label="Bitrate" value={`${(preset.videoBitsPerSecond / 1_000_000).toFixed(1)} Mbps`} />
+            <Metric label="Frame rate" value={`${frameRate} fps`} />
+            <Metric label="Bitrate" value={`${(targetVideoBitsPerSecond / 1_000_000).toFixed(1)} Mbps`} />
           </div>
-          <button className="secondary-button" type="button" onClick={() => void startPreview()}>
+          <button className="secondary-button" type="button" disabled={status === "rendering"} onClick={() => void startPreview()}>
             <Play size={16} />
             Enable preview
           </button>
@@ -407,6 +603,7 @@ export function App() {
 
         <aside className="panel signal-rail">
           <PanelHeader icon={<Gauge size={16} />} title="Signal Intelligence" />
+          <LiveMeter label="AutoPatch" value={voicePatchStrength} />
           <LiveMeter label="Audio peak" value={audioTelemetry.peak} danger={audioTelemetry.isClipping} />
           <LiveMeter label="RMS" value={audioTelemetry.rms} />
           <LiveMeter label="Noise floor" value={audioTelemetry.noiseFloor} warning={audioTelemetry.noiseFloor > 0.35} />
@@ -415,8 +612,12 @@ export function App() {
             <Metric label="Est. size" value={formatBytes(estimatedSize)} />
             <Metric label="Markers" value={qualityMap.markers.length.toString()} />
             <Metric label="Faults" value={qualityLayers.length.toString()} />
+            <Metric label="MP4" value={reviewRender.status === "ready" ? "Ready" : reviewRender.status === "rendering" ? "Rendering" : "Waiting"} />
+            <Metric label="Delivered FPS" value={deliveredFps ? `${deliveredFps}` : `${Math.round(actualFrameRate)}`} />
           </div>
-          <div className={`export-note ${exportMessage.kind}`}>{exportMessage.text}</div>
+          <div className={`export-note ${exportMessage.kind}`} role="status" aria-live="polite">
+            {exportMessage.text}
+          </div>
         </aside>
 
         <section className="panel timeline-panel">
@@ -437,6 +638,7 @@ export function App() {
                 min="0"
                 max={Math.max(qualityMap.duration, 1)}
                 value={qualityMap.trimRange.start}
+                disabled={!recordedBlob || status === "rendering"}
                 onChange={(event) => updateTrimStart(event.target.value)}
               />
             </label>
@@ -447,12 +649,46 @@ export function App() {
                 min="0"
                 max={Math.max(qualityMap.duration, 1)}
                 value={qualityMap.trimRange.end}
+                disabled={!recordedBlob || status === "rendering"}
                 onChange={(event) => updateTrimEnd(event.target.value)}
               />
             </label>
             <span>
               Range {formatTime(qualityMap.trimRange.start)} to {formatTime(qualityMap.trimRange.end)}
             </span>
+          </div>
+          <div
+            ref={reviewStatusRef}
+            className={`review-status ${reviewRender.status === "stale" ? "stale-render" : reviewRender.status}`}
+            tabIndex={-1}
+            role="status"
+            aria-live={reviewRender.status === "error" ? "assertive" : "polite"}
+          >
+            <span>{getReviewStatusText(reviewRender, canSaveOnDesktop)}</span>
+            {reviewRender.status === "rendering" ? (
+              <div
+                className="render-progress"
+                role="progressbar"
+                aria-label="MP4 render progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round((reviewRender.progress ?? 0) * 100)}
+              >
+                <div className="render-progress-track">
+                  <span className="render-progress-fill" style={{ transform: `scaleX(${reviewRender.progress ?? 0})` }} />
+                </div>
+              </div>
+            ) : null}
+            <div className="review-actions">
+              <button
+                type="button"
+                disabled={!recordedBlob || status === "rendering" || reviewRender.status === "ready"}
+                onClick={() => void renderReviewMp4()}
+              >
+                <Scissors size={16} />
+                Render MP4
+              </button>
+            </div>
           </div>
         </section>
       </section>
@@ -478,9 +714,9 @@ export function App() {
           <Radio size={18} />
           Marker
         </button>
-        <button type="button" disabled={!recordedBlob || status === "exporting"} onClick={() => void handleExport()}>
+        <button type="button" disabled={!canDownloadMp4 || status === "exporting" || status === "rendering"} onClick={() => void handleExport()}>
           <Download size={18} />
-          {isDesktop ? "Export MP4" : `Download ${actualFileExtension.toUpperCase()}`}
+          {canSaveOnDesktop ? "Save MP4" : "Download MP4"}
         </button>
         <button type="button" disabled={!recordedBlob} onClick={discardRecording}>
           <Scissors size={18} />
@@ -515,12 +751,13 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function LiveMeter({ label, value, warning, danger }: { label: string; value: number; warning?: boolean; danger?: boolean }) {
   const level = Math.max(0, Math.min(value, 1));
+  const percentage = Math.round(level * 100);
 
   return (
-    <div className="live-meter">
+    <div className="live-meter" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage}>
       <div>
         <span>{label}</span>
-        <strong>{Math.round(level * 100)}%</strong>
+        <strong>{percentage}%</strong>
       </div>
       <div className={`meter-track ${danger ? "danger" : warning ? "warning" : ""}`}>
         <span style={{ transform: `scaleX(${level})` }} />
@@ -538,8 +775,10 @@ function QualityTerrain({
   layers: ReturnType<typeof buildQualityLayers>;
   markers: QualityMapState["markers"];
 }) {
+  const timelineLabel = `${layers.length} quality events and ${markers.length} markers across ${formatTime(duration)}.`;
+
   return (
-    <div className="quality-terrain" aria-label="Quality timeline">
+    <div className="quality-terrain" role="img" aria-label={timelineLabel}>
       <div className="terrain-strata" />
       {layers.map((layer, index) => (
         <span
@@ -557,6 +796,18 @@ function QualityTerrain({
           title={`${marker.label} at ${formatTime(marker.timestamp)}`}
         />
       ))}
+      <ul className="sr-only">
+        {layers.map((layer, index) => (
+          <li key={`${layer.key}-${layer.timestamp}-${index}`}>
+            {layer.label} at {formatTime(layer.timestamp)}, severity {layer.severity}
+          </li>
+        ))}
+        {markers.map((marker) => (
+          <li key={`marker-${marker.id}`}>
+            {marker.label} at {formatTime(marker.timestamp)}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -575,11 +826,20 @@ function getStatusText(status: RecorderStatus): string {
     preview: "Preview armed",
     recording: "Recording",
     paused: "Paused",
+    rendering: "Rendering MP4",
     review: "Review",
     exporting: "Exporting",
     error: "Needs attention"
   };
   return labels[status];
+}
+
+function getReviewStatusText(reviewRender: ReviewRenderState, canSaveOnDesktop: boolean): string {
+  if (reviewRender.status === "ready") return canSaveOnDesktop ? "Rendered MP4 ready to save" : "Rendered MP4 ready to download";
+  if (reviewRender.status === "rendering") return reviewRender.message || "Rendering local MP4 review";
+  if (reviewRender.status === "stale") return "Render a fresh MP4 to use the latest trim and AutoPatch settings";
+  if (reviewRender.status === "error") return reviewRender.error || "MP4 render needs attention";
+  return "Stop a recording to create an MP4 review";
 }
 
 function formatTime(seconds: number): string {
@@ -595,4 +855,3 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-

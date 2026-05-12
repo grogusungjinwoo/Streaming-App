@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildExportFileName, canUseDesktopExporter, downloadRecording } from "./exportService";
+import { buildExportFileName, canUseDesktopSaver, downloadRecording, saveRenderedMp4 } from "./exportService";
 
 describe("buildExportFileName", () => {
   it("uses the selected codec extension instead of pretending every file is mp4", () => {
@@ -15,10 +15,10 @@ describe("buildExportFileName", () => {
   });
 });
 
-describe("canUseDesktopExporter", () => {
+describe("canUseDesktopSaver", () => {
   it("detects the Electron preload bridge", () => {
-    expect(canUseDesktopExporter({ streamingApp: { exportMp4: vi.fn() } })).toBe(true);
-    expect(canUseDesktopExporter({})).toBe(false);
+    expect(canUseDesktopSaver({ streamingApp: { saveMp4: vi.fn() } })).toBe(true);
+    expect(canUseDesktopSaver({})).toBe(false);
   });
 });
 
@@ -40,5 +40,22 @@ describe("downloadRecording", () => {
     expect(remove).toHaveBeenCalled();
     expect(createObjectURL).toHaveBeenCalledOnce();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:test");
+  });
+});
+
+describe("saveRenderedMp4", () => {
+  it("saves rendered MP4 bytes through the desktop bridge", async () => {
+    const saveMp4 = vi.fn().mockResolvedValue({ canceled: false, filePath: "C:\\recording.mp4" });
+    const blob = new Blob(["mp4"], { type: "video/mp4" });
+
+    const result = await saveRenderedMp4(blob, "review.mp4", {
+      streamingApp: { saveMp4, isDesktop: true }
+    } as unknown as Window);
+
+    expect(result).toEqual({ canceled: false, filePath: "C:\\recording.mp4" });
+    expect(saveMp4).toHaveBeenCalledWith({
+      data: await blob.arrayBuffer(),
+      suggestedName: "review.mp4"
+    });
   });
 });

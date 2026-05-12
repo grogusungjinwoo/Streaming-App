@@ -5,20 +5,28 @@
 - No feature uploads camera, microphone, blobs, thumbnails, filenames, or markers.
 - No analytics package or runtime CDN dependency is included.
 - Web downloads use object URLs and revoke them after use.
-- Electron MP4 export uses local temporary files and bundled FFmpeg.
+- Browser MP4 review uses bundled FFmpeg.wasm assets and local object URLs.
+- Electron MP4 review/export uses local temporary files and bundled FFmpeg.
 - Camera and microphone tracks are stopped after recording.
 
 ## Browser Codec Checks
 
 - Codec choice is based on `MediaRecorder.isTypeSupported()`.
-- MP4 is preferred when supported.
-- WebM fallback is labeled honestly and downloaded with `.webm`.
+- MP4 is preferred when supported for capture.
+- WebM fallback is labeled during capture, then rendered into MP4 before download.
 - Unsupported `MediaRecorder` states surface an error instead of starting a broken recording.
+
+## AutoPatch And Review Checks
+
+- AutoPatch strength can be set to 0 for a raw path or raised for broadcast polish.
+- Stop should create a previewable MP4 before download/save is enabled.
+- Changing trim or AutoPatch after render should mark the MP4 stale and require rerender.
+- Render progress should be announced with live status text and progressbar semantics.
+- The camera stage should preserve 16:9 video without stretching in live preview or MP4 review.
 
 ## Manual QA Matrix
 
-- Chrome or Edge: preview, record, pause, resume, stop, marker, download.
-- Firefox: verify WebM fallback and correct extension.
-- Safari where available: verify native MP4 support behavior.
-- Electron on Windows: record, export MP4, play the file, repeat while offline.
-
+- Chrome or Edge: preview, choose 60 FPS, record, pause, resume, stop, wait for MP4 render, revise trim/AutoPatch, rerender, download MP4.
+- Firefox: verify WebM capture fallback is rendered to MP4 before download.
+- Safari where available: verify native MP4 capture still goes through the MP4 review flow.
+- Electron on Windows: record, render MP4, preview the rendered file, save MP4, play the file, repeat while offline.

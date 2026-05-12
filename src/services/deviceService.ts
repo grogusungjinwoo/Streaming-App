@@ -12,11 +12,17 @@ export type CapturePreset = {
   label: string;
 };
 
+export type CaptureFrameRate = 30 | 60;
+export type FrameRateOption = CaptureFrameRate;
+
 export const capturePresets: CapturePreset[] = [
   { label: "Studio 1080p", width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 6_000_000 },
-  { label: "Smooth 720p", width: 1280, height: 720, frameRate: 60, videoBitsPerSecond: 5_000_000 },
+  { label: "Smooth 720p", width: 1280, height: 720, frameRate: 30, videoBitsPerSecond: 5_000_000 },
   { label: "Balanced 720p", width: 1280, height: 720, frameRate: 30, videoBitsPerSecond: 3_500_000 }
 ];
+
+export const captureFrameRates: CaptureFrameRate[] = [30, 60];
+export const frameRateOptions = captureFrameRates;
 
 export async function listMediaDevices(): Promise<DeviceOption[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
@@ -32,20 +38,40 @@ export async function listMediaDevices(): Promise<DeviceOption[]> {
     }));
 }
 
+export function getVideoBitsPerSecond(preset: CapturePreset, frameRate: number): number {
+  return frameRate >= 60 ? Math.round(preset.videoBitsPerSecond * 1.5) : preset.videoBitsPerSecond;
+}
+
+export function buildCaptureConstraints(
+  preset: CapturePreset,
+  frameRate: number,
+  cameraId?: string,
+  microphoneId?: string
+): MediaStreamConstraints;
 export function buildCaptureConstraints(
   preset: CapturePreset,
   cameraId?: string,
   microphoneId?: string
+): MediaStreamConstraints;
+export function buildCaptureConstraints(
+  preset: CapturePreset,
+  frameRateOrCameraId: number | string = preset.frameRate,
+  cameraIdOrMicrophoneId?: string,
+  microphoneId?: string
 ): MediaStreamConstraints {
+  const selectedFrameRate = typeof frameRateOrCameraId === "number" ? frameRateOrCameraId : preset.frameRate;
+  const selectedCameraId = typeof frameRateOrCameraId === "number" ? cameraIdOrMicrophoneId : frameRateOrCameraId;
+  const selectedMicrophoneId = typeof frameRateOrCameraId === "number" ? microphoneId : cameraIdOrMicrophoneId;
+
   return {
     video: {
       width: { ideal: preset.width },
       height: { ideal: preset.height },
-      frameRate: { ideal: preset.frameRate },
-      deviceId: cameraId ? { exact: cameraId } : undefined
+      frameRate: { ideal: selectedFrameRate },
+      deviceId: selectedCameraId ? { exact: selectedCameraId } : undefined
     },
     audio: {
-      deviceId: microphoneId ? { exact: microphoneId } : undefined,
+      deviceId: selectedMicrophoneId ? { exact: selectedMicrophoneId } : undefined,
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true
