@@ -732,6 +732,93 @@ h1 {
   margin: 0;
 }
 
+.voice-diagnostics {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-panel);
+  padding: 11px;
+  background: rgba(8, 11, 14, 0.42);
+}
+
+.diagnostic-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.diagnostic-heading strong {
+  flex: 0 0 auto;
+  color: var(--color-live);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.pitch-trace,
+.spectrogram-bars {
+  position: relative;
+  display: flex;
+  align-items: end;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-panel);
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 13px, var(--graph-gridline) 14px),
+    #081013;
+}
+
+.pitch-trace {
+  height: 86px;
+  padding: 8px;
+}
+
+.pitch-frame {
+  position: relative;
+  flex: 1 1 2px;
+  min-width: 2px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(180deg, var(--color-live), rgba(121, 234, 216, 0.18));
+}
+
+.pitch-frame.unvoiced {
+  background: var(--graph-bar-idle);
+}
+
+.pitch-frame i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--color-warning);
+}
+
+.diagnostic-empty {
+  margin: auto;
+  color: var(--color-text-faint);
+  font-size: 12px;
+}
+
+.spectrogram-bars {
+  height: 42px;
+  padding: 7px;
+}
+
+.spectrogram-bars span {
+  flex: 1 1 0;
+  height: 100%;
+  min-width: 6px;
+  transform-origin: bottom center;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(180deg, var(--color-warning), var(--color-live));
+}
+
 .source-rail .mastering-panel label,
 .source-rail .mastering-slider {
   margin: 0;

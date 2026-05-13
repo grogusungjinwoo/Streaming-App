@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld("streamingApp", {
     voicePatchStrength: number;
     perfectPopStrength: number;
     voiceMastering: {
-      mode: "off" | "natural" | "broadcast" | "synthetic-pitch-lock";
+      mode: "off" | "natural" | "broadcast" | "synthetic-pitch-lock" | "smooth-vocal";
       masteringStrength: number;
       pitchLockAmount: number;
       frequencySculptor: {
@@ -21,6 +21,23 @@ contextBridge.exposeInMainWorld("streamingApp", {
         presence: number;
         harshness: number;
         deCrackle: number;
+      };
+      voiceCleanup: {
+        highPassHz: number;
+        gateThresholdDb: number;
+        gateStrength: number;
+        deEssAmount: number;
+        transientSmoothing: number;
+        vocalLeveling: number;
+      };
+      pitchCorrection: {
+        strength: number;
+        smoothing: number;
+        correctionSpeed: number;
+        maxCentsPerSecond: number;
+        targetMode: "speech-smooth" | "scale";
+        scaleKey: string;
+        scaleType: "chromatic" | "major" | "minor";
       };
     };
   }) => ipcRenderer.invoke("streaming-app:render-mp4", payload),

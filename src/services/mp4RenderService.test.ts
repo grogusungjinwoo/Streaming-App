@@ -71,7 +71,7 @@ describe("mp4RenderService", () => {
   it("builds a compatible fallback chain without advanced repair filters", () => {
     const result = buildVoiceMasteringFilter(createDefaultVoiceMasteringSettings(), "compatible");
 
-    expect(result.appliedFilterProfile).toBe("synthetic-pitch-lock-compatible");
+    expect(result.appliedFilterProfile).toBe("smooth-vocal-compatible");
     expect(result.filter).toContain("highpass");
     expect(result.filter).toContain("afftdn");
     expect(result.filter).toContain("acompressor");

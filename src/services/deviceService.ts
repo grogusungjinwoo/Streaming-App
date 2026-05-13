@@ -60,7 +60,7 @@ export function buildCaptureConstraints(
   frameRateOrCameraId: number | string = preset.frameRate,
   cameraIdOrMicrophoneId?: string,
   microphoneId?: string,
-  audioCaptureProfile: AudioCaptureProfile = "studio-raw"
+  audioCaptureProfile: AudioCaptureProfile = "browser-cleanup"
 ): MediaStreamConstraints {
   const selectedFrameRate = typeof frameRateOrCameraId === "number" ? frameRateOrCameraId : preset.frameRate;
   const selectedCameraId = typeof frameRateOrCameraId === "number" ? cameraIdOrMicrophoneId : frameRateOrCameraId;

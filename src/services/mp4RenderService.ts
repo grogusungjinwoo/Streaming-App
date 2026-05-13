@@ -1,6 +1,7 @@
 import ffmpegCoreUrl from "@ffmpeg/core?url";
 import ffmpegCoreWasmUrl from "@ffmpeg/core/wasm?url";
 import {
+  applySmoothVocalMastering,
   applySyntheticPitchLock,
   buildVoiceMasteringFilter,
   decodePcm16Wav,
@@ -171,12 +172,15 @@ export async function renderMp4(options: RenderMp4Options): Promise<RenderMp4Res
     wasmURL: await toBlobUrl(ffmpegCoreWasmUrl, "application/wasm")
   });
   await ffmpeg.writeFile(inputPath, await fetchFile(options.inputBlob));
-  if (options.voiceMastering.mode === "synthetic-pitch-lock") {
+  if (options.voiceMastering.mode === "synthetic-pitch-lock" || options.voiceMastering.mode === "smooth-vocal") {
     await execFfmpeg(ffmpeg, ["-i", inputPath, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", extractedAudioPath]);
     const extracted = await ffmpeg.readFile(extractedAudioPath);
     const bytes = typeof extracted === "string" ? new TextEncoder().encode(extracted) : extracted;
     const decoded = decodePcm16Wav(bytes);
-    const mastered = applySyntheticPitchLock(decoded.samples, decoded.sampleRate, options.voiceMastering);
+    const mastered =
+      options.voiceMastering.mode === "smooth-vocal"
+        ? applySmoothVocalMastering(decoded.samples, decoded.sampleRate, options.voiceMastering)
+        : applySyntheticPitchLock(decoded.samples, decoded.sampleRate, options.voiceMastering);
     await ffmpeg.writeFile(masteredAudioPath, encodePcm16Wav(mastered.samples, decoded.sampleRate));
     diagnostics = mastered.diagnostics;
     audioInputPath = masteredAudioPath;

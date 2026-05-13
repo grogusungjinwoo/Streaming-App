@@ -77,7 +77,7 @@ export function App() {
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
   const [preset, setPreset] = useState<CapturePreset>(capturePresets[0]);
   const [frameRate, setFrameRate] = useState<FrameRateOption>(30);
-  const [audioCaptureProfile, setAudioCaptureProfile] = useState<AudioCaptureProfile>("studio-raw");
+  const [audioCaptureProfile, setAudioCaptureProfile] = useState<AudioCaptureProfile>("browser-cleanup");
   const [voiceMastering, setVoiceMastering] = useState(() => createDefaultVoiceMasteringSettings());
   const [renderDiagnostics, setRenderDiagnostics] = useState<VoiceRenderDiagnostics | null>(null);
   const [codecChoice, setCodecChoice] = useState<CodecChoice>(() => getBrowserCodecChoice());
@@ -395,6 +395,30 @@ export function App() {
     markMp4ReviewStale();
   }
 
+  function updateVoiceCleanup(key: keyof typeof voiceMastering.voiceCleanup, value: number) {
+    setVoiceMastering((current) => ({
+      ...current,
+      voiceCleanup: {
+        ...current.voiceCleanup,
+        [key]: value
+      }
+    }));
+    setRenderDiagnostics(null);
+    markMp4ReviewStale();
+  }
+
+  function updatePitchCorrection(key: keyof typeof voiceMastering.pitchCorrection, value: number) {
+    setVoiceMastering((current) => ({
+      ...current,
+      pitchCorrection: {
+        ...current.pitchCorrection,
+        [key]: value
+      }
+    }));
+    setRenderDiagnostics(null);
+    markMp4ReviewStale();
+  }
+
   function markMp4ReviewStale() {
     if (!recordedBlob) return;
     setReviewRender((current) => markReviewRenderStale(current));
@@ -576,8 +600,8 @@ export function App() {
               value={audioCaptureProfile}
               onChange={(event) => updateAudioCaptureProfile(event.target.value as AudioCaptureProfile)}
             >
+              <option value="browser-cleanup">Voice Clean</option>
               <option value="studio-raw">Studio Raw</option>
-              <option value="browser-cleanup">Browser Cleanup</option>
             </select>
           </label>
           <label>
@@ -617,11 +641,11 @@ export function App() {
               ))}
             </div>
           </div>
-          <div className="mastering-panel" aria-label="Frequency Sculptor">
+          <div className="mastering-panel" aria-label="Smooth Vocal">
             <div className="mastering-heading">
               <span>
                 <AudioLines size={14} />
-                Frequency Sculptor
+                Smooth Vocal
               </span>
               <strong>48k AAC</strong>
             </div>
@@ -632,6 +656,7 @@ export function App() {
                 value={voiceMastering.mode}
                 onChange={(event) => updateVoiceMasteringMode(event.target.value as VoiceMasteringMode)}
               >
+                <option value="smooth-vocal">Smooth Vocal</option>
                 <option value="synthetic-pitch-lock">Synthetic Pitch Lock</option>
                 <option value="broadcast">Broadcast</option>
                 <option value="natural">Natural</option>
@@ -639,16 +664,72 @@ export function App() {
               </select>
             </label>
             <MasteringSlider
-              label="Mastering Strength"
+              label="Vocal Polish"
               value={voiceMastering.masteringStrength}
               disabled={status === "recording" || status === "paused" || status === "rendering"}
               onChange={updateVoiceMasteringStrength}
             />
             <MasteringSlider
-              label="Pitch Lock Amount"
+              label="Legacy Pitch Lock"
               value={voiceMastering.pitchLockAmount}
               disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "synthetic-pitch-lock"}
               onChange={updatePitchLockAmount}
+            />
+            <MasteringNumberSlider
+              label="High-pass"
+              value={voiceMastering.voiceCleanup.highPassHz}
+              min={60}
+              max={180}
+              step={1}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              format={(value) => `${Math.round(value)} Hz`}
+              onChange={(value) => updateVoiceCleanup("highPassHz", value)}
+            />
+            <MasteringNumberSlider
+              label="Noise Gate"
+              value={voiceMastering.voiceCleanup.gateThresholdDb}
+              min={-72}
+              max={-24}
+              step={1}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              format={(value) => `${Math.round(value)} dB`}
+              onChange={(value) => updateVoiceCleanup("gateThresholdDb", value)}
+            />
+            <MasteringSlider
+              label="Gate Strength"
+              value={voiceMastering.voiceCleanup.gateStrength}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              onChange={(value) => updateVoiceCleanup("gateStrength", value)}
+            />
+            <MasteringSlider
+              label="De-ess"
+              value={voiceMastering.voiceCleanup.deEssAmount}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              onChange={(value) => updateVoiceCleanup("deEssAmount", value)}
+            />
+            <MasteringSlider
+              label="Transient Soften"
+              value={voiceMastering.voiceCleanup.transientSmoothing}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              onChange={(value) => updateVoiceCleanup("transientSmoothing", value)}
+            />
+            <MasteringSlider
+              label="Vocal Leveling"
+              value={voiceMastering.voiceCleanup.vocalLeveling}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              onChange={(value) => updateVoiceCleanup("vocalLeveling", value)}
+            />
+            <MasteringSlider
+              label="Pitch Smooth"
+              value={voiceMastering.pitchCorrection.strength}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "smooth-vocal"}
+              onChange={(value) => updatePitchCorrection("strength", value)}
+            />
+            <MasteringSlider
+              label="Pitch Stability"
+              value={voiceMastering.pitchCorrection.smoothing}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "smooth-vocal"}
+              onChange={(value) => updatePitchCorrection("smoothing", value)}
             />
             <MasteringSlider
               label="Rumble Cut"
@@ -685,7 +766,7 @@ export function App() {
             <Metric label="Requested" value={`${preset.width}x${preset.height}`} />
             <Metric label="Frame rate" value={`${frameRate} fps`} />
             <Metric label="Bitrate" value={`${(targetVideoBitsPerSecond / 1_000_000).toFixed(1)} Mbps`} />
-            <Metric label="Mic profile" value={audioCaptureProfile === "studio-raw" ? "Raw" : "Cleanup"} />
+            <Metric label="Mic profile" value={audioCaptureProfile === "studio-raw" ? "Raw" : "Voice Clean"} />
           </div>
           <button className="secondary-button" type="button" disabled={status === "rendering"} onClick={() => void startPreview()}>
             <Play size={16} />
@@ -717,7 +798,16 @@ export function App() {
         <aside className="panel signal-rail">
           <PanelHeader icon={<Gauge size={16} />} title="Signal Intelligence" />
           <LiveMeter label="Mastering" value={voiceMastering.masteringStrength} />
-          <LiveMeter label="Pitch lock" value={voiceMastering.mode === "synthetic-pitch-lock" ? voiceMastering.pitchLockAmount : 0} />
+          <LiveMeter
+            label="Pitch smooth"
+            value={
+              voiceMastering.mode === "smooth-vocal"
+                ? voiceMastering.pitchCorrection.strength
+                : voiceMastering.mode === "synthetic-pitch-lock"
+                  ? voiceMastering.pitchLockAmount
+                  : 0
+            }
+          />
           <LiveMeter label="Audio peak" value={audioTelemetry.peak} danger={audioTelemetry.isClipping} />
           <LiveMeter label="RMS" value={audioTelemetry.rms} />
           <LiveMeter label="Noise floor" value={audioTelemetry.noiseFloor} warning={audioTelemetry.noiseFloor > 0.35} />
@@ -729,13 +819,17 @@ export function App() {
             <Metric label="MP4" value={reviewRender.status === "ready" ? "Ready" : reviewRender.status === "rendering" ? "Rendering" : "Waiting"} />
             <Metric label="Delivered FPS" value={deliveredFps ? `${deliveredFps}` : `${Math.round(actualFrameRate)}`} />
             <Metric label="Target Hz" value={renderDiagnostics?.targetPitchHz ? renderDiagnostics.targetPitchHz.toFixed(1) : "Pending"} />
+            <Metric label="Smooth Hz" value={renderDiagnostics?.smoothedPitchHz ? renderDiagnostics.smoothedPitchHz.toFixed(1) : "Pending"} />
             <Metric
               label="Voice conf."
               value={renderDiagnostics ? `${Math.round(renderDiagnostics.voicedFrameConfidence * 100)}%` : "Pending"}
             />
+            <Metric label="Gate" value={renderDiagnostics ? `${Math.round(renderDiagnostics.gateActivity * 100)}%` : "Pending"} />
             <Metric label="Peak" value={renderDiagnostics ? `${Math.round(renderDiagnostics.peakLevel * 100)}%` : "Pending"} />
+            <Metric label="RMS" value={renderDiagnostics ? `${Math.round(renderDiagnostics.rmsLevel * 100)}%` : "Pending"} />
             <Metric label="Audio Hz" value={renderDiagnostics ? `${renderDiagnostics.sampleRate}` : "Pending"} />
           </div>
+          <VoiceDiagnostics diagnostics={renderDiagnostics} />
           <div className={`export-note ${exportMessage.kind}`} role="status" aria-live="polite">
             {exportMessage.text}
           </div>
@@ -929,6 +1023,85 @@ function MasteringSlider({
         onChange={(event) => onChange(Number(event.target.value) / 100)}
       />
     </label>
+  );
+}
+
+function MasteringNumberSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  format,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled: boolean;
+  format: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="mastering-slider">
+      <span>
+        {label}
+        <strong>{format(value)}</strong>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+
+function VoiceDiagnostics({ diagnostics }: { diagnostics: VoiceRenderDiagnostics | null }) {
+  const pitchTrace = diagnostics?.pitchTrace ?? [];
+  const bands = diagnostics?.spectralBands ?? [];
+  const maxPitch = Math.max(320, ...pitchTrace.map((frame) => frame.rawPitchHz || frame.smoothedPitchHz || 0));
+
+  return (
+    <div className="voice-diagnostics" aria-label="Voice cleanup diagnostics">
+      <div className="diagnostic-heading">
+        <span>Voice diagnostics</span>
+        <strong>{diagnostics ? `${Math.round((diagnostics.voicedFrameRatio ?? 0) * 100)}% voiced` : "Waiting"}</strong>
+      </div>
+      <div className="pitch-trace" role="img" aria-label="Raw and smoothed pitch trace">
+        {pitchTrace.length > 0 ? (
+          pitchTrace.map((frame, index) => (
+            <span
+              key={`${frame.timeSeconds}-${index}`}
+              className={`pitch-frame ${frame.voiced ? "voiced" : "unvoiced"}`}
+              style={{
+                height: `${Math.max(8, ((frame.rawPitchHz || frame.smoothedPitchHz || 0) / maxPitch) * 100)}%`,
+                opacity: frame.voiced ? 0.94 : 0.32
+              }}
+              title={`${frame.voiced ? "Voiced" : "Unvoiced"} ${Math.round(frame.rawPitchHz)} Hz -> ${Math.round(frame.smoothedPitchHz)} Hz`}
+            >
+              <i style={{ bottom: `${Math.max(4, ((frame.smoothedPitchHz || 0) / maxPitch) * 100)}%` }} />
+            </span>
+          ))
+        ) : (
+          <span className="diagnostic-empty">Render for pitch trace</span>
+        )}
+      </div>
+      <div className="spectrogram-bars" role="img" aria-label="Simple voice frequency energy">
+        {bands.length > 0 ? (
+          bands.map((band, index) => <span key={index} style={{ transform: `scaleY(${Math.max(0.04, band)})` }} />)
+        ) : (
+          <span />
+        )}
+      </div>
+    </div>
   );
 }
 

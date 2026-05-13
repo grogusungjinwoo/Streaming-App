@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  applySmoothVocalMastering,
   applySyntheticPitchLock,
   buildVoiceMasteringFilter,
   decodePcm16Wav,
@@ -111,7 +112,24 @@ ipcMain.handle("streaming-app:export-mp4", async (_event, payload: ExportPayload
         mode: "broadcast",
         masteringStrength: 0.78,
         pitchLockAmount: 0,
-        frequencySculptor: { rumbleCut: 0.65, warmth: 0.45, presence: 0.5, harshness: 0.45, deCrackle: 0.65 }
+        frequencySculptor: { rumbleCut: 0.65, warmth: 0.45, presence: 0.5, harshness: 0.45, deCrackle: 0.65 },
+        voiceCleanup: {
+          highPassHz: 90,
+          gateThresholdDb: -38,
+          gateStrength: 0.72,
+          deEssAmount: 0.65,
+          transientSmoothing: 0.45,
+          vocalLeveling: 0.72
+        },
+        pitchCorrection: {
+          strength: 0.35,
+          smoothing: 0.72,
+          correctionSpeed: 0.5,
+          maxCentsPerSecond: 600,
+          targetMode: "speech-smooth",
+          scaleKey: "C",
+          scaleType: "major"
+        }
       },
       useTrim: false
     });
@@ -133,10 +151,13 @@ ipcMain.handle("streaming-app:render-mp4", async (_event, payload: RenderPayload
 
   try {
     await writeFile(inputPath, Buffer.from(payload.data));
-    if (payload.voiceMastering.mode === "synthetic-pitch-lock") {
+    if (payload.voiceMastering.mode === "synthetic-pitch-lock" || payload.voiceMastering.mode === "smooth-vocal") {
       await extractAudioWav(inputPath, extractedAudioPath);
       const decoded = decodePcm16Wav(await readFile(extractedAudioPath));
-      const mastered = applySyntheticPitchLock(decoded.samples, decoded.sampleRate, payload.voiceMastering);
+      const mastered =
+        payload.voiceMastering.mode === "smooth-vocal"
+          ? applySmoothVocalMastering(decoded.samples, decoded.sampleRate, payload.voiceMastering)
+          : applySyntheticPitchLock(decoded.samples, decoded.sampleRate, payload.voiceMastering);
       await writeFile(masteredAudioPath, Buffer.from(encodePcm16Wav(mastered.samples, decoded.sampleRate)));
       diagnostics = mastered.diagnostics;
       audioInputPath = masteredAudioPath;
