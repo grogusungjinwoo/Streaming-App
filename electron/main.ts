@@ -34,6 +34,7 @@ type RenderPayload = {
   videoBitsPerSecond: number;
   voicePatchStrength: number;
   perfectPopStrength: number;
+  audioProcessingMode: AudioProcessingMode;
   voiceMastering: VoiceMasteringSettings;
 };
 
@@ -41,6 +42,8 @@ type SavePayload = {
   data: ArrayBuffer;
   suggestedName: string;
 };
+
+type AudioProcessingMode = "mastered" | "native";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,6 +111,7 @@ ipcMain.handle("streaming-app:export-mp4", async (_event, payload: ExportPayload
       videoBitsPerSecond: 6_000_000,
       voicePatchStrength: 0.65,
       perfectPopStrength: 0.75,
+      audioProcessingMode: "mastered",
       voiceMastering: {
         mode: "broadcast",
         masteringStrength: 0.78,
@@ -151,7 +155,10 @@ ipcMain.handle("streaming-app:render-mp4", async (_event, payload: RenderPayload
 
   try {
     await writeFile(inputPath, Buffer.from(payload.data));
-    if (payload.voiceMastering.mode === "synthetic-pitch-lock" || payload.voiceMastering.mode === "smooth-vocal") {
+    if (
+      payload.audioProcessingMode === "mastered" &&
+      (payload.voiceMastering.mode === "synthetic-pitch-lock" || payload.voiceMastering.mode === "smooth-vocal")
+    ) {
       await extractAudioWav(inputPath, extractedAudioPath);
       const decoded = decodePcm16Wav(await readFile(extractedAudioPath));
       const mastered =
@@ -204,6 +211,7 @@ function runFfmpeg(
     videoBitsPerSecond: number;
     voicePatchStrength: number;
     perfectPopStrength: number;
+    audioProcessingMode: AudioProcessingMode;
     voiceMastering: VoiceMasteringSettings;
     audioInputPath?: string;
     useTrim: boolean;
@@ -215,7 +223,7 @@ function runFfmpeg(
   return spawnFfmpeg(ffmpegPath, advancedArgs)
     .then(() => "advanced" as const)
     .catch((error: Error) => {
-      if (options.voiceMastering.mode === "off" || !shouldRetryWithCompatibleFilter(error)) {
+      if (options.audioProcessingMode === "native" || options.voiceMastering.mode === "off" || !shouldRetryWithCompatibleFilter(error)) {
         throw error;
       }
       return spawnFfmpeg(ffmpegPath, buildFfmpegProcessArgs(inputPath, outputPath, options, "compatible")).then(
@@ -236,6 +244,7 @@ function buildFfmpegProcessArgs(
     videoBitsPerSecond: number;
     voicePatchStrength: number;
     perfectPopStrength: number;
+    audioProcessingMode: AudioProcessingMode;
     voiceMastering: VoiceMasteringSettings;
     audioInputPath?: string;
     useTrim: boolean;
@@ -262,8 +271,6 @@ function buildFfmpegProcessArgs(
     String(options.frameRate),
     "-vf",
     "format=yuv420p",
-    "-af",
-    buildVoiceMasteringFilter(options.voiceMastering, voiceFilterProfile),
     "-c:v",
     "libx264",
     "-preset",
@@ -274,9 +281,11 @@ function buildFfmpegProcessArgs(
     "aac",
     "-b:a",
     "192k",
-    "-ar",
-    "48000",
   );
+
+  if (options.audioProcessingMode === "mastered") {
+    args.push("-af", buildVoiceMasteringFilter(options.voiceMastering, voiceFilterProfile), "-ar", "48000");
+  }
 
   if (options.audioInputPath) {
     args.push("-map", "0:v:0?", "-map", "1:a:0", "-shortest");

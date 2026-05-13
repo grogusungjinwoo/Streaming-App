@@ -7,7 +7,7 @@ Streaming App is a local-first camera recorder with a professional control-room 
 - Requests camera and microphone access only after the user clicks **Enable preview**.
 - Records locally with `MediaRecorder`.
 - Offers an explicit 30 FPS / 60 FPS capture choice before preview. The app requests the selected frame rate and reports the actual delivered/negotiated FPS when the device or browser falls back.
-- Captures a **Voice Clean** mic lane by default, requesting 48 kHz mono while enabling browser AGC, echo cancellation, and noise suppression when supported. **Studio Raw** remains available for expert unprocessed capture.
+- Captures a **Voice Clean** mic lane by default, requesting 48 kHz mono while enabling browser AGC, echo cancellation, and noise suppression when supported. **Studio Raw** remains available for expert unprocessed capture, and **Device Native** records with the selected/default microphone as reported by the device without app-requested audio constraints.
 - Applies render-only voice mastering with **Smooth Vocal** controls for high-pass cleanup, noise gating, de-essing, transient smoothing, vocal leveling, pitch smoothing, and frequency sculpting.
 - Detects the real browser recording format with `MediaRecorder.isTypeSupported()`.
 - Renders a reviewed MP4 after **Stop** before download/save. Browser mode uses FFmpeg.wasm locally; Electron uses bundled native FFmpeg.
@@ -37,7 +37,7 @@ npm run electron:build
 
 ## MP4 Review And Export
 
-After Stop, the app renders a local review MP4 from the captured recording, trim range, FPS target, bitrate, and render-only voice mastering settings. Smooth Vocal extracts mono 48 kHz PCM locally, removes rumble/DC, gates low-level noise, reduces sibilance, levels the voice, smooths voiced pitch frames, and encodes the MP4 audio as AAC. Legacy Synthetic Pitch Lock remains available, but the default path favors natural speech cleanup over obvious tuning. Download/save is disabled until the latest settings have been rendered.
+After Stop, the app renders a local review MP4 from the captured recording, trim range, FPS target, bitrate, and render-only voice mastering settings. Smooth Vocal extracts mono 48 kHz PCM locally, removes rumble/DC, gates low-level noise, reduces sibilance, levels the voice, smooths voiced pitch frames, and encodes the MP4 audio as AAC. Legacy Synthetic Pitch Lock remains available, but the default path favors natural speech cleanup over obvious tuning. Device Native recordings skip app cleanup, mastering filters, and forced audio resampling during MP4 review; the audio may still be encoded as needed for the MP4 file. Download/save is disabled until the latest settings have been rendered.
 
 In the browser, FFmpeg.wasm is lazy-loaded from bundled `@ffmpeg/ffmpeg`, `@ffmpeg/util`, and single-thread `@ffmpeg/core` assets. In Electron, the secure preload bridge exposes `renderMp4` and `saveMp4`; the main process writes temporary local input/output files and runs bundled FFmpeg with argument arrays, not shell string interpolation. Temporary directories are removed after render succeeds or fails.
 

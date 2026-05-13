@@ -1,4 +1,4 @@
-export type AudioCaptureProfile = "studio-raw" | "browser-cleanup";
+export type AudioCaptureProfile = "studio-raw" | "browser-cleanup" | "device-native";
 
 export type VoiceMasteringMode = "off" | "natural" | "broadcast" | "synthetic-pitch-lock" | "smooth-vocal";
 

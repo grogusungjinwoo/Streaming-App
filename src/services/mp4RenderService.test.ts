@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFfmpegRenderArgs, clampRenderTrimRange } from "./mp4RenderService";
+import { buildFfmpegRenderArgs, clampRenderTrimRange, getRecordedAudioProcessingMode } from "./mp4RenderService";
 import {
   analyzePitchLock,
   buildVoiceMasteringFilter,
@@ -22,6 +22,7 @@ describe("mp4RenderService", () => {
       videoBitsPerSecond: 9_000_000,
       voicePatchStrength: 0.7,
       perfectPopStrength: 0,
+      audioProcessingMode: "mastered",
       voiceMastering: createDefaultVoiceMasteringSettings()
     });
 
@@ -45,6 +46,35 @@ describe("mp4RenderService", () => {
     );
     expect(args[args.length - 1]).toBe("review.mp4");
     expect(args[args.indexOf("-b:v") + 1]).toBe("9000k");
+  });
+
+  it("builds native audio render args without app audio filters or forced resampling", () => {
+    const args = buildFfmpegRenderArgs({
+      inputPath: "input.webm",
+      outputPath: "review.mp4",
+      trimRange: { start: 0, end: 10 },
+      frameRate: 30,
+      videoBitsPerSecond: 6_000_000,
+      voicePatchStrength: 0.7,
+      perfectPopStrength: 0,
+      audioProcessingMode: "native",
+      voiceMastering: createDefaultVoiceMasteringSettings()
+    });
+
+    expect(args).toEqual(expect.arrayContaining(["-c:a", "aac", "-b:a", "192k"]));
+    expect(args).not.toContain("-af");
+    expect(args).not.toContain("-ar");
+    expect(args.join(" ")).not.toContain("aformat");
+    expect(args.join(" ")).not.toContain("aresample");
+    expect(args.join(" ")).not.toContain("highpass");
+    expect(args.join(" ")).not.toContain("acompressor");
+    expect(args.join(" ")).not.toContain("alimiter");
+  });
+
+  it("uses the recorded capture profile when choosing render audio processing", () => {
+    expect(getRecordedAudioProcessingMode("device-native", "browser-cleanup")).toBe("native");
+    expect(getRecordedAudioProcessingMode("browser-cleanup", "device-native")).toBe("mastered");
+    expect(getRecordedAudioProcessingMode(null, "device-native")).toBe("native");
   });
 
   it("builds a conservative voice mastering filter for synthetic pitch lock renders", () => {

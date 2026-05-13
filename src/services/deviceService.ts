@@ -14,7 +14,7 @@ export type CapturePreset = {
 
 export type CaptureFrameRate = 30 | 60;
 export type FrameRateOption = CaptureFrameRate;
-export type AudioCaptureProfile = "studio-raw" | "browser-cleanup";
+export type AudioCaptureProfile = "studio-raw" | "browser-cleanup" | "device-native";
 
 export const capturePresets: CapturePreset[] = [
   { label: "Studio 1080p", width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 6_000_000 },
@@ -77,8 +77,12 @@ export function buildCaptureConstraints(
   };
 }
 
-function buildAudioConstraints(microphoneId: string | undefined, audioCaptureProfile: AudioCaptureProfile): MediaTrackConstraints {
+function buildAudioConstraints(microphoneId: string | undefined, audioCaptureProfile: AudioCaptureProfile): boolean | MediaTrackConstraints {
   const deviceId = microphoneId ? { exact: microphoneId } : undefined;
+
+  if (audioCaptureProfile === "device-native") {
+    return deviceId ? { deviceId } : true;
+  }
 
   if (audioCaptureProfile === "browser-cleanup") {
     return {

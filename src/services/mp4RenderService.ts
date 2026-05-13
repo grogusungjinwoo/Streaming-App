@@ -1,5 +1,6 @@
 import ffmpegCoreUrl from "@ffmpeg/core?url";
 import ffmpegCoreWasmUrl from "@ffmpeg/core/wasm?url";
+import type { AudioCaptureProfile } from "./deviceService";
 import {
   applySmoothVocalMastering,
   applySyntheticPitchLock,
@@ -16,6 +17,8 @@ export type RenderTrimRange = {
   end: number;
 };
 
+export type AudioProcessingMode = "mastered" | "native";
+
 export type FfmpegRenderArgsOptions = {
   inputPath: string;
   outputPath: string;
@@ -24,6 +27,7 @@ export type FfmpegRenderArgsOptions = {
   videoBitsPerSecond: number;
   voicePatchStrength: number;
   perfectPopStrength: number;
+  audioProcessingMode: AudioProcessingMode;
   voiceMastering: VoiceMasteringSettings;
   voiceFilterProfile?: VoiceMasteringFilterProfile;
   audioInputPath?: string;
@@ -43,6 +47,7 @@ export type RenderMp4RecordingOptions = {
   videoBitsPerSecond: number;
   voicePatchStrength: number;
   perfectPopStrength: number;
+  audioProcessingMode: AudioProcessingMode;
   voiceMastering: VoiceMasteringSettings;
   useDesktopRenderer?: boolean;
   onDiagnostics?: (diagnostics: VoiceRenderDiagnostics) => void;
@@ -67,6 +72,7 @@ type DesktopRenderBridge = {
       videoBitsPerSecond: number;
       voicePatchStrength: number;
       perfectPopStrength: number;
+      audioProcessingMode: AudioProcessingMode;
       voiceMastering: VoiceMasteringSettings;
     }) => Promise<{
       data?: ArrayBuffer;
@@ -92,6 +98,13 @@ function clamp(value: number, min: number, max: number): number {
 
 function formatSeconds(seconds: number): string {
   return Number.isInteger(seconds) ? seconds.toString() : seconds.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+export function getRecordedAudioProcessingMode(
+  recordedAudioCaptureProfile: AudioCaptureProfile | null,
+  selectedAudioCaptureProfile: AudioCaptureProfile
+): AudioProcessingMode {
+  return (recordedAudioCaptureProfile ?? selectedAudioCaptureProfile) === "device-native" ? "native" : "mastered";
 }
 
 export function clampRenderTrimRange(trimRange: RenderTrimRange, durationSeconds: number): RenderTrimRange {
@@ -136,16 +149,19 @@ export function buildFfmpegRenderArgs(options: FfmpegRenderArgsOptions): string[
     "-c:a",
     "aac",
     "-b:a",
-    "192k",
-    "-ar",
-    "48000"
+    "192k"
   );
+
+  if (options.audioProcessingMode === "mastered") {
+    args.push("-ar", "48000");
+  }
 
   if (options.audioInputPath) {
     args.push("-map", "0:v:0?", "-map", "1:a:0", "-shortest");
   }
 
-  const audioFilter = buildVoiceMasteringFilter(options.voiceMastering, options.voiceFilterProfile).filter;
+  const audioFilter =
+    options.audioProcessingMode === "mastered" ? buildVoiceMasteringFilter(options.voiceMastering, options.voiceFilterProfile).filter : "anull";
 
   if (audioFilter !== "anull") {
     args.push("-af", audioFilter);
@@ -172,7 +188,10 @@ export async function renderMp4(options: RenderMp4Options): Promise<RenderMp4Res
     wasmURL: await toBlobUrl(ffmpegCoreWasmUrl, "application/wasm")
   });
   await ffmpeg.writeFile(inputPath, await fetchFile(options.inputBlob));
-  if (options.voiceMastering.mode === "synthetic-pitch-lock" || options.voiceMastering.mode === "smooth-vocal") {
+  if (
+    options.audioProcessingMode === "mastered" &&
+    (options.voiceMastering.mode === "synthetic-pitch-lock" || options.voiceMastering.mode === "smooth-vocal")
+  ) {
     await execFfmpeg(ffmpeg, ["-i", inputPath, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", extractedAudioPath]);
     const extracted = await ffmpeg.readFile(extractedAudioPath);
     const bytes = typeof extracted === "string" ? new TextEncoder().encode(extracted) : extracted;
@@ -187,21 +206,22 @@ export async function renderMp4(options: RenderMp4Options): Promise<RenderMp4Res
   }
 
   const renderArgs = {
-      inputPath,
-      outputPath,
-      audioInputPath,
-      trimRange: options.trimRange,
-      frameRate: options.frameRate,
-      videoBitsPerSecond: options.videoBitsPerSecond,
-      voicePatchStrength: options.voicePatchStrength,
-      perfectPopStrength: options.perfectPopStrength,
-      voiceMastering: options.voiceMastering
-    };
+    inputPath,
+    outputPath,
+    audioInputPath,
+    trimRange: options.trimRange,
+    frameRate: options.frameRate,
+    videoBitsPerSecond: options.videoBitsPerSecond,
+    voicePatchStrength: options.voicePatchStrength,
+    perfectPopStrength: options.perfectPopStrength,
+    audioProcessingMode: options.audioProcessingMode,
+    voiceMastering: options.voiceMastering
+  };
 
   try {
     await execFfmpeg(ffmpeg, buildFfmpegRenderArgs(renderArgs));
   } catch (error) {
-    if (options.voiceMastering.mode === "off") throw error;
+    if (options.audioProcessingMode === "native" || options.voiceMastering.mode === "off") throw error;
     await Promise.resolve(ffmpeg.deleteFile?.(outputPath)).catch(() => undefined);
     await execFfmpeg(ffmpeg, buildFfmpegRenderArgs({ ...renderArgs, voiceFilterProfile: "compatible" }));
     if (diagnostics) {
@@ -240,6 +260,7 @@ export async function renderMp4Recording(sourceBlob: Blob, options: RenderMp4Rec
         videoBitsPerSecond: options.videoBitsPerSecond,
         voicePatchStrength: options.voicePatchStrength,
         perfectPopStrength: options.perfectPopStrength,
+        audioProcessingMode: options.audioProcessingMode,
         voiceMastering: options.voiceMastering
       });
 
@@ -262,6 +283,7 @@ export async function renderMp4Recording(sourceBlob: Blob, options: RenderMp4Rec
     videoBitsPerSecond: options.videoBitsPerSecond,
     voicePatchStrength: options.voicePatchStrength,
     perfectPopStrength: options.perfectPopStrength,
+    audioProcessingMode: options.audioProcessingMode,
     voiceMastering: options.voiceMastering,
     onProgress: options.onProgress
   });

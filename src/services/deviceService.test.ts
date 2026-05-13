@@ -26,6 +26,19 @@ describe("deviceService", () => {
     expect(audio.echoCancellation).toBe(false);
   });
 
+  it("can request device native capture without modifying microphone constraints", () => {
+    const constraints = buildCaptureConstraints(capturePresets[0], 30, "camera-1", "mic-1", "device-native");
+    const audio = constraints.audio as MediaTrackConstraints;
+
+    expect(audio).toEqual({ deviceId: { exact: "mic-1" } });
+  });
+
+  it("uses the default microphone as-is for device native capture when no microphone is selected", () => {
+    const constraints = buildCaptureConstraints(capturePresets[0], 30, "camera-1", "", "device-native");
+
+    expect(constraints.audio).toBe(true);
+  });
+
   it("keeps 30 fps at the preset bitrate and scales 60 fps upward", () => {
     const preset = capturePresets[0];
 

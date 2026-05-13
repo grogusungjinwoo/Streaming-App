@@ -1,3 +1,4 @@
+import type { AudioProcessingMode } from "./mp4RenderService";
 import type { VoiceMasteringSettings, VoiceRenderDiagnostics } from "./voiceMasteringService";
 
 export type DesktopExportPayload = {
@@ -23,6 +24,7 @@ export type DesktopRenderPayload = {
   videoBitsPerSecond: number;
   voicePatchStrength: number;
   perfectPopStrength: number;
+  audioProcessingMode: AudioProcessingMode;
   voiceMastering: VoiceMasteringSettings;
 };
 

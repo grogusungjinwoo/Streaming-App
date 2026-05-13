@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("streamingApp", {
     videoBitsPerSecond: number;
     voicePatchStrength: number;
     perfectPopStrength: number;
+    audioProcessingMode: "mastered" | "native";
     voiceMastering: {
       mode: "off" | "natural" | "broadcast" | "synthetic-pitch-lock" | "smooth-vocal";
       masteringStrength: number;

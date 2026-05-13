@@ -26,7 +26,7 @@ import {
 } from "./services/deviceService";
 import { buildExportFileName, canUseDesktopRenderer, canUseDesktopSaver, saveRenderedMp4 } from "./services/exportService";
 import { getBrowserCodecChoice, type CodecChoice } from "./services/codecSupport";
-import { getBlobInputExtension, renderMp4Recording } from "./services/mp4RenderService";
+import { getBlobInputExtension, getRecordedAudioProcessingMode, renderMp4Recording } from "./services/mp4RenderService";
 import {
   addMarker,
   buildQualityLayers,
@@ -78,6 +78,8 @@ export function App() {
   const [preset, setPreset] = useState<CapturePreset>(capturePresets[0]);
   const [frameRate, setFrameRate] = useState<FrameRateOption>(30);
   const [audioCaptureProfile, setAudioCaptureProfile] = useState<AudioCaptureProfile>("browser-cleanup");
+  const [activeAudioCaptureProfile, setActiveAudioCaptureProfile] = useState<AudioCaptureProfile | null>(null);
+  const [recordedAudioCaptureProfile, setRecordedAudioCaptureProfile] = useState<AudioCaptureProfile | null>(null);
   const [voiceMastering, setVoiceMastering] = useState(() => createDefaultVoiceMasteringSettings());
   const [renderDiagnostics, setRenderDiagnostics] = useState<VoiceRenderDiagnostics | null>(null);
   const [codecChoice, setCodecChoice] = useState<CodecChoice>(() => getBrowserCodecChoice());
@@ -122,6 +124,10 @@ export function App() {
   const trimDurationSeconds = getTrimDuration(qualityMap);
   const voicePatchStrength = voiceMastering.masteringStrength;
   const perfectPopStrength = voiceMastering.pitchLockAmount;
+  const isNativeAudioBypassSelected = audioCaptureProfile === "device-native";
+  const isNativeAudioBypassForReview = recordedAudioCaptureProfile === "device-native";
+  const isNativeAudioBypassActive =
+    isNativeAudioBypassSelected || activeAudioCaptureProfile === "device-native" || isNativeAudioBypassForReview;
 
   useEffect(() => {
     void refreshDevices();
@@ -248,13 +254,17 @@ export function App() {
     setRenderDiagnostics(null);
 
     try {
+      const requestedAudioCaptureProfile = audioCaptureProfile;
       stream?.getTracks().forEach((track) => track.stop());
+      setActiveAudioCaptureProfile(null);
       const nextStream = await navigator.mediaDevices.getUserMedia(
-        buildCaptureConstraints(preset, frameRate, selectedCameraId, selectedMicrophoneId, audioCaptureProfile)
+        buildCaptureConstraints(preset, frameRate, selectedCameraId, selectedMicrophoneId, requestedAudioCaptureProfile)
       );
       setStream(nextStream);
+      setActiveAudioCaptureProfile(requestedAudioCaptureProfile);
       setStatus("preview");
       setRecordedBlob(null);
+      setRecordedAudioCaptureProfile(null);
       setRenderedBlob(null);
       setReviewRender(createReviewRenderState());
       clearObjectUrl();
@@ -278,6 +288,7 @@ export function App() {
     }
 
     setRecordedBlob(null);
+    setRecordedAudioCaptureProfile(null);
     setRenderedBlob(null);
     setReviewRender(createReviewRenderState());
     setRenderDiagnostics(null);
@@ -321,11 +332,14 @@ export function App() {
 
   async function stopRecording() {
     if (!recorderRef.current) return;
+    const capturedAudioCaptureProfile = activeAudioCaptureProfile ?? audioCaptureProfile;
     const result = await recorderRef.current.stop();
     recorderRef.current.cleanup();
     stream?.getTracks().forEach((track) => track.stop());
     setStream(null);
+    setActiveAudioCaptureProfile(null);
     setRecordedBlob(result.blob);
+    setRecordedAudioCaptureProfile(capturedAudioCaptureProfile);
     const duration = Math.max(elapsedSeconds, Math.round((Date.now() - recordingStartRef.current) / 1000));
     const trimRange = { start: 0, end: duration };
     setQualityMap((current) => ({ ...current, duration, trimRange }));
@@ -333,7 +347,7 @@ export function App() {
       kind: "info",
       text: "Recording captured. Rendering the local MP4 review file now."
     });
-    await renderReviewMp4(result.blob, trimRange);
+    await renderReviewMp4(result.blob, trimRange, capturedAudioCaptureProfile);
   }
 
   function addTimelineMarker() {
@@ -428,8 +442,13 @@ export function App() {
     });
   }
 
-  async function renderReviewMp4(sourceBlob = recordedBlob, trimRange = qualityMap.trimRange) {
+  async function renderReviewMp4(
+    sourceBlob = recordedBlob,
+    trimRange = qualityMap.trimRange,
+    capturedAudioCaptureProfile = recordedAudioCaptureProfile
+  ) {
     if (!sourceBlob) return;
+    const audioProcessingMode = getRecordedAudioProcessingMode(capturedAudioCaptureProfile, audioCaptureProfile);
     setStatus("rendering");
     setReviewRender({
       status: "rendering",
@@ -447,6 +466,7 @@ export function App() {
         videoBitsPerSecond: targetVideoBitsPerSecond,
         voicePatchStrength,
         perfectPopStrength,
+        audioProcessingMode,
         voiceMastering,
         useDesktopRenderer: canRenderOnDesktop,
         onDiagnostics: setRenderDiagnostics,
@@ -465,7 +485,10 @@ export function App() {
       setStatus("review");
       setExportMessage({
         kind: "success",
-        text: "MP4 review is ready. You can preview it here, revise trim or voice polish, or download the rendered MP4."
+        text:
+          audioProcessingMode === "native"
+            ? "MP4 review is ready with native microphone audio. You can preview it here, revise trim, or download the rendered MP4."
+            : "MP4 review is ready. You can preview it here, revise trim or voice polish, or download the rendered MP4."
       });
     } catch (renderError) {
       setStatus("review");
@@ -509,6 +532,8 @@ export function App() {
   function discardRecording() {
     clearObjectUrl();
     setRecordedBlob(null);
+    setRecordedAudioCaptureProfile(null);
+    setActiveAudioCaptureProfile(null);
     setRenderedBlob(null);
     setPreviewUrl("");
     setElapsedSeconds(0);
@@ -602,6 +627,7 @@ export function App() {
             >
               <option value="browser-cleanup">Voice Clean</option>
               <option value="studio-raw">Studio Raw</option>
+              <option value="device-native">Device Native</option>
             </select>
           </label>
           <label>
@@ -647,12 +673,12 @@ export function App() {
                 <AudioLines size={14} />
                 Smooth Vocal
               </span>
-              <strong>48k AAC</strong>
+              <strong>{isNativeAudioBypassActive ? "Native" : "48k AAC"}</strong>
             </div>
             <label>
               Voice mode
               <select
-                disabled={status === "recording" || status === "paused" || status === "rendering"}
+                disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
                 value={voiceMastering.mode}
                 onChange={(event) => updateVoiceMasteringMode(event.target.value as VoiceMasteringMode)}
               >
@@ -666,13 +692,19 @@ export function App() {
             <MasteringSlider
               label="Vocal Polish"
               value={voiceMastering.masteringStrength}
-              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
               onChange={updateVoiceMasteringStrength}
             />
             <MasteringSlider
               label="Legacy Pitch Lock"
               value={voiceMastering.pitchLockAmount}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "synthetic-pitch-lock"}
+              disabled={
+                status === "recording" ||
+                status === "paused" ||
+                status === "rendering" ||
+                isNativeAudioBypassActive ||
+                voiceMastering.mode !== "synthetic-pitch-lock"
+              }
               onChange={updatePitchLockAmount}
             />
             <MasteringNumberSlider
@@ -681,7 +713,7 @@ export function App() {
               min={60}
               max={180}
               step={1}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode === "off"}
               format={(value) => `${Math.round(value)} Hz`}
               onChange={(value) => updateVoiceCleanup("highPassHz", value)}
             />
@@ -691,74 +723,74 @@ export function App() {
               min={-72}
               max={-24}
               step={1}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode === "off"}
               format={(value) => `${Math.round(value)} dB`}
               onChange={(value) => updateVoiceCleanup("gateThresholdDb", value)}
             />
             <MasteringSlider
               label="Gate Strength"
               value={voiceMastering.voiceCleanup.gateStrength}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode === "off"}
               onChange={(value) => updateVoiceCleanup("gateStrength", value)}
             />
             <MasteringSlider
               label="De-ess"
               value={voiceMastering.voiceCleanup.deEssAmount}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode === "off"}
               onChange={(value) => updateVoiceCleanup("deEssAmount", value)}
             />
             <MasteringSlider
               label="Transient Soften"
               value={voiceMastering.voiceCleanup.transientSmoothing}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode === "off"}
               onChange={(value) => updateVoiceCleanup("transientSmoothing", value)}
             />
             <MasteringSlider
               label="Vocal Leveling"
               value={voiceMastering.voiceCleanup.vocalLeveling}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode === "off"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode === "off"}
               onChange={(value) => updateVoiceCleanup("vocalLeveling", value)}
             />
             <MasteringSlider
               label="Pitch Smooth"
               value={voiceMastering.pitchCorrection.strength}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "smooth-vocal"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode !== "smooth-vocal"}
               onChange={(value) => updatePitchCorrection("strength", value)}
             />
             <MasteringSlider
               label="Pitch Stability"
               value={voiceMastering.pitchCorrection.smoothing}
-              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "smooth-vocal"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive || voiceMastering.mode !== "smooth-vocal"}
               onChange={(value) => updatePitchCorrection("smoothing", value)}
             />
             <MasteringSlider
               label="Rumble Cut"
               value={voiceMastering.frequencySculptor.rumbleCut}
-              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
               onChange={(value) => updateFrequencySculptor("rumbleCut", value)}
             />
             <MasteringSlider
               label="Warmth"
               value={voiceMastering.frequencySculptor.warmth}
-              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
               onChange={(value) => updateFrequencySculptor("warmth", value)}
             />
             <MasteringSlider
               label="Presence"
               value={voiceMastering.frequencySculptor.presence}
-              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
               onChange={(value) => updateFrequencySculptor("presence", value)}
             />
             <MasteringSlider
               label="Harshness"
               value={voiceMastering.frequencySculptor.harshness}
-              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
               onChange={(value) => updateFrequencySculptor("harshness", value)}
             />
             <MasteringSlider
               label="De-crackle"
               value={voiceMastering.frequencySculptor.deCrackle}
-              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || isNativeAudioBypassActive}
               onChange={(value) => updateFrequencySculptor("deCrackle", value)}
             />
           </div>
@@ -766,7 +798,7 @@ export function App() {
             <Metric label="Requested" value={`${preset.width}x${preset.height}`} />
             <Metric label="Frame rate" value={`${frameRate} fps`} />
             <Metric label="Bitrate" value={`${(targetVideoBitsPerSecond / 1_000_000).toFixed(1)} Mbps`} />
-            <Metric label="Mic profile" value={audioCaptureProfile === "studio-raw" ? "Raw" : "Voice Clean"} />
+            <Metric label="Mic profile" value={getAudioCaptureProfileLabel(audioCaptureProfile)} />
           </div>
           <button className="secondary-button" type="button" disabled={status === "rendering"} onClick={() => void startPreview()}>
             <Play size={16} />
@@ -797,11 +829,13 @@ export function App() {
 
         <aside className="panel signal-rail">
           <PanelHeader icon={<Gauge size={16} />} title="Signal Intelligence" />
-          <LiveMeter label="Mastering" value={voiceMastering.masteringStrength} />
+          <LiveMeter label="Mastering" value={isNativeAudioBypassActive ? 0 : voiceMastering.masteringStrength} />
           <LiveMeter
             label="Pitch smooth"
             value={
-              voiceMastering.mode === "smooth-vocal"
+              isNativeAudioBypassActive
+                ? 0
+                : voiceMastering.mode === "smooth-vocal"
                 ? voiceMastering.pitchCorrection.strength
                 : voiceMastering.mode === "synthetic-pitch-lock"
                   ? voiceMastering.pitchLockAmount
@@ -1174,6 +1208,12 @@ function getMediaErrorMessage(error: unknown): string {
   if (error.name === "NotFoundError") return "No camera or microphone was found.";
   if (error.name === "OverconstrainedError") return "The selected quality preset is not supported by this device.";
   return error.message;
+}
+
+function getAudioCaptureProfileLabel(profile: AudioCaptureProfile | null): string {
+  if (profile === "device-native") return "Device Native";
+  if (profile === "studio-raw") return "Raw";
+  return "Voice Clean";
 }
 
 function getStatusText(status: RecorderStatus): string {
