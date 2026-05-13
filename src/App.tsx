@@ -19,6 +19,7 @@ import {
   frameRateOptions,
   getVideoBitsPerSecond,
   listMediaDevices,
+  type AudioCaptureProfile,
   type CapturePreset,
   type DeviceOption,
   type FrameRateOption
@@ -50,7 +51,11 @@ import {
   estimateFileGrowth,
   type AudioTelemetry
 } from "./services/telemetryService";
-import { createVoicePatchSession, type VoicePatchSession } from "./services/voicePatchService";
+import {
+  createDefaultVoiceMasteringSettings,
+  type VoiceMasteringMode,
+  type VoiceRenderDiagnostics
+} from "./services/voiceMasteringService";
 
 type RecorderStatus = "idle" | "preview" | "recording" | "paused" | "rendering" | "review" | "exporting" | "error";
 
@@ -72,8 +77,9 @@ export function App() {
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
   const [preset, setPreset] = useState<CapturePreset>(capturePresets[0]);
   const [frameRate, setFrameRate] = useState<FrameRateOption>(30);
-  const [voicePatchStrength, setVoicePatchStrength] = useState(0.65);
-  const [perfectPopStrength, setPerfectPopStrength] = useState(0.75);
+  const [audioCaptureProfile, setAudioCaptureProfile] = useState<AudioCaptureProfile>("studio-raw");
+  const [voiceMastering, setVoiceMastering] = useState(() => createDefaultVoiceMasteringSettings());
+  const [renderDiagnostics, setRenderDiagnostics] = useState<VoiceRenderDiagnostics | null>(null);
   const [codecChoice, setCodecChoice] = useState<CodecChoice>(() => getBrowserCodecChoice());
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -97,7 +103,6 @@ export function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const reviewStatusRef = useRef<HTMLDivElement | null>(null);
   const recorderRef = useRef<RecorderService | null>(null);
-  const voicePatchSessionRef = useRef<VoicePatchSession | null>(null);
   const recordingStartRef = useRef<number>(0);
   const objectUrlRef = useRef("");
   const latestAudioRef = useRef<AudioTelemetry>(initialAudioTelemetry);
@@ -111,10 +116,12 @@ export function App() {
   const selectedFormat = isDesktop ? "Desktop MP4 render" : "Browser MP4 render";
   const targetVideoBitsPerSecond = getVideoBitsPerSecond(preset, frameRate);
   const renderFrameRate = Math.max(1, Math.round(Math.min(frameRate, deliveredFps || actualFrameRate || frameRate)));
-  const estimatedSize = estimateFileGrowth(elapsedSeconds, targetVideoBitsPerSecond + 160_000);
+  const estimatedSize = estimateFileGrowth(elapsedSeconds, targetVideoBitsPerSecond + 192_000);
   const streamStatusText = getStatusText(status);
   const canDownloadMp4 = Boolean(renderedBlob && canDownloadRenderedMp4(reviewRender));
   const trimDurationSeconds = getTrimDuration(qualityMap);
+  const voicePatchStrength = voiceMastering.masteringStrength;
+  const perfectPopStrength = voiceMastering.pitchLockAmount;
 
   useEffect(() => {
     void refreshDevices();
@@ -238,11 +245,12 @@ export function App() {
       kind: "info",
       text: "Requesting camera and microphone permission. Capture starts only after you press record."
     });
+    setRenderDiagnostics(null);
 
     try {
       stream?.getTracks().forEach((track) => track.stop());
       const nextStream = await navigator.mediaDevices.getUserMedia(
-        buildCaptureConstraints(preset, frameRate, selectedCameraId, selectedMicrophoneId)
+        buildCaptureConstraints(preset, frameRate, selectedCameraId, selectedMicrophoneId, audioCaptureProfile)
       );
       setStream(nextStream);
       setStatus("preview");
@@ -272,6 +280,7 @@ export function App() {
     setRecordedBlob(null);
     setRenderedBlob(null);
     setReviewRender(createReviewRenderState());
+    setRenderDiagnostics(null);
     clearObjectUrl();
     setQualitySamples([]);
     setQualityMap(createInitialQualityMap());
@@ -279,21 +288,15 @@ export function App() {
     recordingStartRef.current = Date.now();
     recorderRef.current = new RecorderService();
     try {
-      const voicePatchSession = createVoicePatchSession(stream, {
-        enabled: true,
-        strength: voicePatchStrength,
-        perfectPopStrength
-      });
-      voicePatchSessionRef.current = voicePatchSession;
-      recorderRef.current.start(voicePatchSession.stream, {
+      recorderRef.current.start(stream, {
         mimeType: codecChoice.mimeType,
         videoBitsPerSecond: targetVideoBitsPerSecond,
-        audioBitsPerSecond: 160_000
+        audioBitsPerSecond: 192_000
       });
     } catch (recordingError) {
       recorderRef.current = null;
       setStatus("error");
-      setError(recordingError instanceof Error ? recordingError.message : "Unable to create the AutoPatch audio graph.");
+      setError(recordingError instanceof Error ? recordingError.message : "Unable to start the raw studio recorder.");
       return;
     }
     setStatus("recording");
@@ -320,8 +323,6 @@ export function App() {
     if (!recorderRef.current) return;
     const result = await recorderRef.current.stop();
     recorderRef.current.cleanup();
-    await voicePatchSessionRef.current?.cleanup();
-    voicePatchSessionRef.current = null;
     stream?.getTracks().forEach((track) => track.stop());
     setStream(null);
     setRecordedBlob(result.blob);
@@ -356,13 +357,41 @@ export function App() {
     });
   }
 
-  function updateVoicePatchStrength(value: string) {
-    setVoicePatchStrength(Number(value) / 100);
+  function updateAudioCaptureProfile(value: AudioCaptureProfile) {
+    setAudioCaptureProfile(value);
+    setExportMessage({
+      kind: "info",
+      text: "Mic capture profile will apply the next time preview is enabled."
+    });
+  }
+
+  function updateVoiceMasteringMode(value: VoiceMasteringMode) {
+    setVoiceMastering((current) => ({ ...current, mode: value }));
+    setRenderDiagnostics(null);
     markMp4ReviewStale();
   }
 
-  function updatePerfectPopStrength(value: string) {
-    setPerfectPopStrength(Number(value) / 100);
+  function updateVoiceMasteringStrength(value: number) {
+    setVoiceMastering((current) => ({ ...current, masteringStrength: clamp01(value) }));
+    setRenderDiagnostics(null);
+    markMp4ReviewStale();
+  }
+
+  function updatePitchLockAmount(value: number) {
+    setVoiceMastering((current) => ({ ...current, pitchLockAmount: clamp01(value) }));
+    setRenderDiagnostics(null);
+    markMp4ReviewStale();
+  }
+
+  function updateFrequencySculptor(key: keyof typeof voiceMastering.frequencySculptor, value: number) {
+    setVoiceMastering((current) => ({
+      ...current,
+      frequencySculptor: {
+        ...current.frequencySculptor,
+        [key]: clamp01(value)
+      }
+    }));
+    setRenderDiagnostics(null);
     markMp4ReviewStale();
   }
 
@@ -384,6 +413,7 @@ export function App() {
       message: "Rendering MP4 review locally..."
     });
     setRenderedBlob(null);
+    setRenderDiagnostics(null);
 
     try {
       const mp4Blob = await renderMp4Recording(sourceBlob, {
@@ -393,7 +423,9 @@ export function App() {
         videoBitsPerSecond: targetVideoBitsPerSecond,
         voicePatchStrength,
         perfectPopStrength,
+        voiceMastering,
         useDesktopRenderer: canRenderOnDesktop,
+        onDiagnostics: setRenderDiagnostics,
         onProgress: (progress) => {
           setReviewRender({
             status: "rendering",
@@ -459,6 +491,7 @@ export function App() {
     setQualitySamples([]);
     setQualityMap(createInitialQualityMap());
     setReviewRender(createReviewRenderState());
+    setRenderDiagnostics(null);
     setStatus("idle");
     setExportMessage({ kind: "info", text: "Recording discarded locally and object URL revoked." });
   }
@@ -479,6 +512,7 @@ export function App() {
 
   function updateActualSettings(nextStream: MediaStream) {
     const settings = nextStream.getVideoTracks()[0]?.getSettings();
+    const audioSettings = nextStream.getAudioTracks()[0]?.getSettings();
     if (!settings) {
       setActualSettings("No video track settings reported");
       return;
@@ -488,7 +522,12 @@ export function App() {
       { width: preset.width, height: preset.height, frameRate },
       settings
     );
-    setActualSettings(`${description.actual} actual · requested ${description.requested}`);
+    const micDescription = audioSettings
+      ? `mic ${audioSettings.sampleRate ?? "auto"} Hz, ${audioSettings.channelCount ?? "auto"} ch, EC ${formatTrackFlag(
+          audioSettings.echoCancellation
+        )}, NS ${formatTrackFlag(audioSettings.noiseSuppression)}, AGC ${formatTrackFlag(audioSettings.autoGainControl)}`
+      : "mic settings unavailable";
+    setActualSettings(`${description.actual} actual - requested ${description.requested} - ${micDescription}`);
   }
 
   return (
@@ -531,6 +570,17 @@ export function App() {
             </select>
           </label>
           <label>
+            Mic capture
+            <select
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              value={audioCaptureProfile}
+              onChange={(event) => updateAudioCaptureProfile(event.target.value as AudioCaptureProfile)}
+            >
+              <option value="studio-raw">Studio Raw</option>
+              <option value="browser-cleanup">Browser Cleanup</option>
+            </select>
+          </label>
+          <label>
             Quality preset
             <select
               disabled={status === "recording" || status === "paused" || status === "rendering"}
@@ -567,40 +617,75 @@ export function App() {
               ))}
             </div>
           </div>
-          <label className="autopatch-control">
-            <span>
-              <AudioLines size={14} />
-              AutoPatch
-            </span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={Math.round(voicePatchStrength * 100)}
+          <div className="mastering-panel" aria-label="Frequency Sculptor">
+            <div className="mastering-heading">
+              <span>
+                <AudioLines size={14} />
+                Frequency Sculptor
+              </span>
+              <strong>48k AAC</strong>
+            </div>
+            <label>
+              Voice mode
+              <select
+                disabled={status === "recording" || status === "paused" || status === "rendering"}
+                value={voiceMastering.mode}
+                onChange={(event) => updateVoiceMasteringMode(event.target.value as VoiceMasteringMode)}
+              >
+                <option value="synthetic-pitch-lock">Synthetic Pitch Lock</option>
+                <option value="broadcast">Broadcast</option>
+                <option value="natural">Natural</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+            <MasteringSlider
+              label="Mastering Strength"
+              value={voiceMastering.masteringStrength}
               disabled={status === "recording" || status === "paused" || status === "rendering"}
-              onChange={(event) => updateVoicePatchStrength(event.target.value)}
+              onChange={updateVoiceMasteringStrength}
             />
-            <strong className="autopatch-value">Broadcast {Math.round(voicePatchStrength * 100)}%</strong>
-          </label>
-          <label className="autopatch-control">
-            <span>
-              <Radio size={14} />
-              Perfect Pop Filter
-            </span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={Math.round(perfectPopStrength * 100)}
+            <MasteringSlider
+              label="Pitch Lock Amount"
+              value={voiceMastering.pitchLockAmount}
+              disabled={status === "recording" || status === "paused" || status === "rendering" || voiceMastering.mode !== "synthetic-pitch-lock"}
+              onChange={updatePitchLockAmount}
+            />
+            <MasteringSlider
+              label="Rumble Cut"
+              value={voiceMastering.frequencySculptor.rumbleCut}
               disabled={status === "recording" || status === "paused" || status === "rendering"}
-              onChange={(event) => updatePerfectPopStrength(event.target.value)}
+              onChange={(value) => updateFrequencySculptor("rumbleCut", value)}
             />
-            <strong className="autopatch-value">Pop {Math.round(perfectPopStrength * 100)}%</strong>
-          </label>
+            <MasteringSlider
+              label="Warmth"
+              value={voiceMastering.frequencySculptor.warmth}
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              onChange={(value) => updateFrequencySculptor("warmth", value)}
+            />
+            <MasteringSlider
+              label="Presence"
+              value={voiceMastering.frequencySculptor.presence}
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              onChange={(value) => updateFrequencySculptor("presence", value)}
+            />
+            <MasteringSlider
+              label="Harshness"
+              value={voiceMastering.frequencySculptor.harshness}
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              onChange={(value) => updateFrequencySculptor("harshness", value)}
+            />
+            <MasteringSlider
+              label="De-crackle"
+              value={voiceMastering.frequencySculptor.deCrackle}
+              disabled={status === "recording" || status === "paused" || status === "rendering"}
+              onChange={(value) => updateFrequencySculptor("deCrackle", value)}
+            />
+          </div>
           <div className="source-stats">
             <Metric label="Requested" value={`${preset.width}x${preset.height}`} />
             <Metric label="Frame rate" value={`${frameRate} fps`} />
             <Metric label="Bitrate" value={`${(targetVideoBitsPerSecond / 1_000_000).toFixed(1)} Mbps`} />
+            <Metric label="Mic profile" value={audioCaptureProfile === "studio-raw" ? "Raw" : "Cleanup"} />
           </div>
           <button className="secondary-button" type="button" disabled={status === "rendering"} onClick={() => void startPreview()}>
             <Play size={16} />
@@ -631,8 +716,8 @@ export function App() {
 
         <aside className="panel signal-rail">
           <PanelHeader icon={<Gauge size={16} />} title="Signal Intelligence" />
-          <LiveMeter label="AutoPatch" value={voicePatchStrength} />
-          <LiveMeter label="Perfect Pop" value={perfectPopStrength} />
+          <LiveMeter label="Mastering" value={voiceMastering.masteringStrength} />
+          <LiveMeter label="Pitch lock" value={voiceMastering.mode === "synthetic-pitch-lock" ? voiceMastering.pitchLockAmount : 0} />
           <LiveMeter label="Audio peak" value={audioTelemetry.peak} danger={audioTelemetry.isClipping} />
           <LiveMeter label="RMS" value={audioTelemetry.rms} />
           <LiveMeter label="Noise floor" value={audioTelemetry.noiseFloor} warning={audioTelemetry.noiseFloor > 0.35} />
@@ -643,6 +728,13 @@ export function App() {
             <Metric label="Faults" value={qualityLayers.length.toString()} />
             <Metric label="MP4" value={reviewRender.status === "ready" ? "Ready" : reviewRender.status === "rendering" ? "Rendering" : "Waiting"} />
             <Metric label="Delivered FPS" value={deliveredFps ? `${deliveredFps}` : `${Math.round(actualFrameRate)}`} />
+            <Metric label="Target Hz" value={renderDiagnostics?.targetPitchHz ? renderDiagnostics.targetPitchHz.toFixed(1) : "Pending"} />
+            <Metric
+              label="Voice conf."
+              value={renderDiagnostics ? `${Math.round(renderDiagnostics.voicedFrameConfidence * 100)}%` : "Pending"}
+            />
+            <Metric label="Peak" value={renderDiagnostics ? `${Math.round(renderDiagnostics.peakLevel * 100)}%` : "Pending"} />
+            <Metric label="Audio Hz" value={renderDiagnostics ? `${renderDiagnostics.sampleRate}` : "Pending"} />
           </div>
           <div className={`export-note ${exportMessage.kind}`} role="status" aria-live="polite">
             {exportMessage.text}
@@ -808,6 +900,38 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function MasteringSlider({
+  label,
+  value,
+  disabled,
+  onChange
+}: {
+  label: string;
+  value: number;
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  const percent = Math.round(clamp01(value) * 100);
+
+  return (
+    <label className="mastering-slider">
+      <span>
+        {label}
+        <strong>{percent}%</strong>
+      </span>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value={percent}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value) / 100)}
+      />
+    </label>
+  );
+}
+
 function LiveMeter({ label, value, warning, danger }: { label: string; value: number; warning?: boolean; danger?: boolean }) {
   const level = Math.max(0, Math.min(value, 1));
   const percentage = Math.round(level * 100);
@@ -917,4 +1041,14 @@ function formatBytes(bytes: number): string {
 
 function formatSecondsInput(seconds: number): string {
   return (Number.isFinite(seconds) ? Math.max(0, seconds) : 0).toFixed(1);
+}
+
+function clamp01(value: number): number {
+  return Math.min(Math.max(Number.isFinite(value) ? value : 0, 0), 1);
+}
+
+function formatTrackFlag(value: unknown): string {
+  if (value === true) return "on";
+  if (value === false) return "off";
+  return "auto";
 }

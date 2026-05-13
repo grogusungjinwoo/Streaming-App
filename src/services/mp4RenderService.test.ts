@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildAudioPatchFilter, buildFfmpegRenderArgs, clampRenderTrimRange } from "./mp4RenderService";
+import { buildFfmpegRenderArgs, clampRenderTrimRange } from "./mp4RenderService";
+import {
+  analyzePitchLock,
+  buildVoiceMasteringFilter,
+  createDefaultVoiceMasteringSettings,
+  quantizeFrequencyToNearestNote
+} from "./voiceMasteringService";
 
 describe("mp4RenderService", () => {
   it("clamps render trim ranges to the recording duration", () => {
@@ -15,7 +21,8 @@ describe("mp4RenderService", () => {
       frameRate: 60,
       videoBitsPerSecond: 9_000_000,
       voicePatchStrength: 0.7,
-      perfectPopStrength: 0
+      perfectPopStrength: 0,
+      voiceMastering: createDefaultVoiceMasteringSettings()
     });
 
     expect(args).toEqual(
@@ -40,24 +47,53 @@ describe("mp4RenderService", () => {
     expect(args[args.indexOf("-b:v") + 1]).toBe("9000k");
   });
 
-  it("preserves the broadcast voice filter when Perfect Pop Filter is off", () => {
-    expect(buildAudioPatchFilter(0)).toBe("anull");
+  it("builds a conservative voice mastering filter for synthetic pitch lock renders", () => {
+    const result = buildVoiceMasteringFilter({
+      ...createDefaultVoiceMasteringSettings(),
+      mode: "synthetic-pitch-lock",
+      masteringStrength: 0.8,
+      pitchLockAmount: 0.85
+    });
 
-    const filter = buildAudioPatchFilter(0.75);
-
-    expect(filter).toContain("highpass=f=85");
-    expect(filter).toContain("afftdn");
-    expect(filter).toContain("acompressor");
-    expect(filter).toContain("alimiter");
-    expect(filter).not.toContain("f=140");
+    expect(result.filter).toContain("aformat=sample_fmts=fltp:sample_rates=48000");
+    expect(result.filter).toContain("aresample=48000");
+    expect(result.filter).toContain("adeclick");
+    expect(result.filter).toContain("adeclip");
+    expect(result.filter).toContain("afftdn");
+    expect(result.filter).toContain("dynaudnorm");
+    expect(result.filter).toContain("mcompand=0.008\\,0.060 6 -70/-70\\,-45/-36");
+    expect(result.filter).toContain("alimiter");
+    expect(result.filter).not.toContain("rubberband");
+    expect(result.filter).not.toContain("mcompand=0.008,0.060");
+    expect(result.filter).not.toContain("-70/-70,-45/-36");
   });
 
-  it("adds pop-filter smoothing when Perfect Pop Filter is enabled", () => {
-    const filter = buildAudioPatchFilter(0.65, 0.75);
+  it("builds a compatible fallback chain without advanced repair filters", () => {
+    const result = buildVoiceMasteringFilter(createDefaultVoiceMasteringSettings(), "compatible");
 
-    expect(filter).toContain("highpass=f=111");
-    expect(filter).toContain("equalizer=f=140");
-    expect(filter).toContain("equalizer=f=5200");
-    expect(filter.match(/acompressor/g)).toHaveLength(2);
+    expect(result.appliedFilterProfile).toBe("synthetic-pitch-lock-compatible");
+    expect(result.filter).toContain("highpass");
+    expect(result.filter).toContain("afftdn");
+    expect(result.filter).toContain("acompressor");
+    expect(result.filter).toContain("alimiter");
+    expect(result.filter).not.toContain("adeclick");
+    expect(result.filter).not.toContain("dynaudnorm");
+  });
+
+  it("quantizes detected pitch to a stable musical target", () => {
+    expect(quantizeFrequencyToNearestNote(221)).toEqual(
+      expect.objectContaining({ note: "A3", frequencyHz: expect.closeTo(220, 1) })
+    );
+  });
+
+  it("detects a confident voiced pitch target from synthetic audio", () => {
+    const sampleRate = 48_000;
+    const samples = Float32Array.from({ length: sampleRate }, (_, index) => Math.sin((2 * Math.PI * 220 * index) / sampleRate) * 0.35);
+    const analysis = analyzePitchLock(samples, sampleRate, { pitchLockAmount: 0.85 });
+
+    expect(analysis.detectedMedianPitchHz).toBeCloseTo(220, 4);
+    expect(analysis.targetPitchHz).toBeCloseTo(220, 1);
+    expect(analysis.voicedFrameRatio).toBeGreaterThan(0.8);
+    expect(analysis.confidence).toBeGreaterThan(0.75);
   });
 });

@@ -14,6 +14,7 @@ export type CapturePreset = {
 
 export type CaptureFrameRate = 30 | 60;
 export type FrameRateOption = CaptureFrameRate;
+export type AudioCaptureProfile = "studio-raw" | "browser-cleanup";
 
 export const capturePresets: CapturePreset[] = [
   { label: "Studio 1080p", width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 6_000_000 },
@@ -46,7 +47,8 @@ export function buildCaptureConstraints(
   preset: CapturePreset,
   frameRate: number,
   cameraId?: string,
-  microphoneId?: string
+  microphoneId?: string,
+  audioCaptureProfile?: AudioCaptureProfile
 ): MediaStreamConstraints;
 export function buildCaptureConstraints(
   preset: CapturePreset,
@@ -57,7 +59,8 @@ export function buildCaptureConstraints(
   preset: CapturePreset,
   frameRateOrCameraId: number | string = preset.frameRate,
   cameraIdOrMicrophoneId?: string,
-  microphoneId?: string
+  microphoneId?: string,
+  audioCaptureProfile: AudioCaptureProfile = "studio-raw"
 ): MediaStreamConstraints {
   const selectedFrameRate = typeof frameRateOrCameraId === "number" ? frameRateOrCameraId : preset.frameRate;
   const selectedCameraId = typeof frameRateOrCameraId === "number" ? cameraIdOrMicrophoneId : frameRateOrCameraId;
@@ -70,11 +73,30 @@ export function buildCaptureConstraints(
       frameRate: { ideal: selectedFrameRate },
       deviceId: selectedCameraId ? { exact: selectedCameraId } : undefined
     },
-    audio: {
-      deviceId: selectedMicrophoneId ? { exact: selectedMicrophoneId } : undefined,
+    audio: buildAudioConstraints(selectedMicrophoneId, audioCaptureProfile)
+  };
+}
+
+function buildAudioConstraints(microphoneId: string | undefined, audioCaptureProfile: AudioCaptureProfile): MediaTrackConstraints {
+  const deviceId = microphoneId ? { exact: microphoneId } : undefined;
+
+  if (audioCaptureProfile === "browser-cleanup") {
+    return {
+      deviceId,
       echoCancellation: true,
       noiseSuppression: true,
-      autoGainControl: true
-    }
+      autoGainControl: true,
+      sampleRate: { ideal: 48_000 },
+      channelCount: { ideal: 1 }
+    };
+  }
+
+  return {
+    deviceId,
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    sampleRate: { ideal: 48_000 },
+    channelCount: { ideal: 1 }
   };
 }

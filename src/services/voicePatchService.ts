@@ -2,6 +2,7 @@ export type VoicePatchSettings = {
   enabled: boolean;
   strength: number;
   perfectPopStrength: number;
+  processDuringCapture?: boolean;
 };
 
 export type VoicePatchSession = {
@@ -26,7 +27,9 @@ export function normalizeVoicePatchSettings(settings: VoicePatchSettings): Voice
   const strength = clamp(Number.isFinite(settings.strength) ? settings.strength : 0, 0, 1);
   const perfectPopStrength = clamp(Number.isFinite(settings.perfectPopStrength) ? settings.perfectPopStrength : 0, 0, 1);
 
-  return settings.enabled ? { enabled: true, strength, perfectPopStrength } : { enabled: false, strength: 0, perfectPopStrength: 0 };
+  return settings.enabled
+    ? { enabled: true, strength, perfectPopStrength, processDuringCapture: Boolean(settings.processDuringCapture) }
+    : { enabled: false, strength: 0, perfectPopStrength: 0, processDuringCapture: false };
 }
 
 export function createVoicePatchSession(
@@ -39,6 +42,7 @@ export function createVoicePatchSession(
 
   if (
     !normalizedSettings.enabled ||
+    !normalizedSettings.processDuringCapture ||
     (normalizedSettings.strength === 0 && normalizedSettings.perfectPopStrength === 0) ||
     audioTracks.length === 0
   ) {
@@ -54,7 +58,6 @@ export function createVoicePatchSession(
   const plosiveTamer = normalizedSettings.perfectPopStrength > 0 ? audioContext.createBiquadFilter() : null;
   const presence = audioContext.createBiquadFilter();
   const harshnessTamer = normalizedSettings.perfectPopStrength > 0 ? audioContext.createBiquadFilter() : null;
-  const gate = audioContext.createWaveShaper();
   const compressor = audioContext.createDynamicsCompressor();
   const limiter = audioContext.createDynamicsCompressor();
   const outputGain = audioContext.createGain();
@@ -85,14 +88,11 @@ export function createVoicePatchSession(
     harshnessTamer.gain.value = -(0.8 + perfectPopStrength * 2.2);
   }
 
-  gate.curve = createSoftGateCurve(Math.max(strength, perfectPopStrength * 0.8));
-  gate.oversample = "2x";
-
-  compressor.threshold.value = -16 - strength * 10 - perfectPopStrength * 6;
-  compressor.knee.value = 18;
-  compressor.ratio.value = 2 + strength * 2.5 + perfectPopStrength * 1.3;
-  compressor.attack.value = 0.008;
-  compressor.release.value = 0.16;
+  compressor.threshold.value = -14 - strength * 6 - perfectPopStrength * 4;
+  compressor.knee.value = 22;
+  compressor.ratio.value = 1.8 + strength * 1.6 + perfectPopStrength;
+  compressor.attack.value = 0.012;
+  compressor.release.value = 0.22;
 
   limiter.threshold.value = -3;
   limiter.knee.value = 0;
@@ -108,7 +108,6 @@ export function createVoicePatchSession(
     ...(plosiveTamer ? [plosiveTamer] : []),
     presence,
     ...(harshnessTamer ? [harshnessTamer] : []),
-    gate,
     compressor,
     limiter,
     outputGain,
@@ -139,22 +138,6 @@ export function createVoicePatchSession(
       await audioContext.close();
     }
   };
-}
-
-function createSoftGateCurve(strength: number): Float32Array<ArrayBuffer> {
-  const samples = 4096;
-  const curve = new Float32Array(new ArrayBuffer(samples * Float32Array.BYTES_PER_ELEMENT));
-  const threshold = 0.015 + strength * 0.025;
-  const floor = 0.15 + (1 - strength) * 0.25;
-
-  for (let index = 0; index < samples; index += 1) {
-    const x = (index / (samples - 1)) * 2 - 1;
-    const magnitude = Math.abs(x);
-    const gain = magnitude < threshold ? floor : 1;
-    curve[index] = x * gain;
-  }
-
-  return curve;
 }
 
 function createDefaultAudioContext(): AudioContext {

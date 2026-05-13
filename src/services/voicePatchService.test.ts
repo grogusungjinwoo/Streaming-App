@@ -13,12 +13,14 @@ describe("voicePatchService", () => {
     expect(normalizeVoicePatchSettings({ enabled: true, strength: 1.8, perfectPopStrength: 2 })).toEqual({
       enabled: true,
       strength: 1,
-      perfectPopStrength: 1
+      perfectPopStrength: 1,
+      processDuringCapture: false
     });
     expect(normalizeVoicePatchSettings({ enabled: false, strength: 0.8, perfectPopStrength: 0.7 })).toEqual({
       enabled: false,
       strength: 0,
-      perfectPopStrength: 0
+      perfectPopStrength: 0,
+      processDuringCapture: false
     });
   });
 
@@ -45,13 +47,37 @@ describe("voicePatchService", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("defaults to raw capture so render mastering does not double-process audio", async () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    const context = {
+      createMediaStreamSource: vi.fn(),
+      createWaveShaper: vi.fn(),
+      close
+    };
+    const inputStream = {
+      getVideoTracks: () => [{ id: "video" } as MediaStreamTrack],
+      getAudioTracks: () => [{ id: "raw-audio" } as MediaStreamTrack]
+    } as MediaStream;
+
+    const session = createVoicePatchSession(inputStream, { enabled: true, strength: 0.65, perfectPopStrength: 0.75 }, {
+      createAudioContext: () => context as unknown as AudioContext
+    });
+
+    expect(session.stream).toBe(inputStream);
+    expect(context.createMediaStreamSource).not.toHaveBeenCalled();
+    expect(context.createWaveShaper).not.toHaveBeenCalled();
+
+    await session.cleanup();
+
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("creates a processed recording stream and closes the audio graph on cleanup", async () => {
     const source = createNode();
     const highpass = { ...createNode(), type: "", frequency: { value: 0 }, Q: { value: 0 } };
     const plosiveTamer = { ...createNode(), type: "", frequency: { value: 0 }, gain: { value: 0 }, Q: { value: 0 } };
     const presence = { ...createNode(), type: "", frequency: { value: 0 }, gain: { value: 0 }, Q: { value: 0 } };
     const harshnessTamer = { ...createNode(), type: "", frequency: { value: 0 }, gain: { value: 0 }, Q: { value: 0 } };
-    const gate = { ...createNode(), curve: null as Float32Array | null, oversample: "none" as OverSampleType };
     const compressor = {
       ...createNode(),
       threshold: { value: 0 },
@@ -84,7 +110,7 @@ describe("voicePatchService", () => {
         .mockReturnValueOnce(plosiveTamer)
         .mockReturnValueOnce(presence)
         .mockReturnValueOnce(harshnessTamer),
-      createWaveShaper: vi.fn(() => gate),
+      createWaveShaper: vi.fn(),
       createDynamicsCompressor: vi.fn().mockReturnValueOnce(compressor).mockReturnValueOnce(limiter),
       createGain: vi.fn(() => outputGain),
       createMediaStreamDestination: vi.fn(() => destination),
@@ -96,7 +122,7 @@ describe("voicePatchService", () => {
     } as MediaStream;
     const createdStreams: MediaStreamTrack[][] = [];
 
-    const session = createVoicePatchSession(inputStream, { enabled: true, strength: 0.65, perfectPopStrength: 0.75 }, {
+    const session = createVoicePatchSession(inputStream, { enabled: true, strength: 0.65, perfectPopStrength: 0.75, processDuringCapture: true }, {
       createAudioContext: () => context as unknown as AudioContext,
       createMediaStream: (tracks) => {
         createdStreams.push(tracks);
@@ -115,7 +141,7 @@ describe("voicePatchService", () => {
     expect(plosiveTamer.gain.value).toBeLessThan(0);
     expect(harshnessTamer.type).toBe("peaking");
     expect(harshnessTamer.gain.value).toBeLessThan(0);
-    expect(gate.curve).toBeInstanceOf(Float32Array);
+    expect(context.createWaveShaper).not.toHaveBeenCalled();
 
     await session.cleanup();
 

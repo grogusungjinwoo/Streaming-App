@@ -7,11 +7,12 @@ Streaming App is a local-first camera recorder with a professional control-room 
 - Requests camera and microphone access only after the user clicks **Enable preview**.
 - Records locally with `MediaRecorder`.
 - Offers an explicit 30 FPS / 60 FPS capture choice before preview. The app requests the selected frame rate and reports the actual delivered/negotiated FPS when the device or browser falls back.
-- Applies **AutoPatch** voice polish plus a separate **Perfect Pop Filter** for local broadcast-style plosive, crack, harshness, level, and limiting control.
+- Captures a **Studio Raw** mic lane by default, requesting 48 kHz mono while disabling browser AGC, echo cancellation, and noise suppression when supported.
+- Applies render-only voice mastering with **Synthetic Pitch Lock** and **Frequency Sculptor** controls for rumble cut, warmth, presence, harshness, de-crackle, pitch lock amount, and mastering strength.
 - Detects the real browser recording format with `MediaRecorder.isTypeSupported()`.
 - Renders a reviewed MP4 after **Stop** before download/save. Browser mode uses FFmpeg.wasm locally; Electron uses bundled native FFmpeg.
 - Lets users preview the rendered MP4, revise exact trim seconds and voice polish, rerender, then download/save only the current MP4.
-- Shows live audio meters, voice enhancement strength, actual stream settings, estimated file size, markers, trim range, render progress, and a quality terrain timeline.
+- Shows live audio meters, mastering strength, pitch-lock diagnostics, actual stream settings, estimated file size, markers, trim range, render progress, and a quality terrain timeline.
 
 ## Privacy Model
 
@@ -36,7 +37,7 @@ npm run electron:build
 
 ## MP4 Review And Export
 
-After Stop, the app renders a local review MP4 from the captured blob, trim range, FPS target, bitrate, AutoPatch strength, and Perfect Pop Filter strength. Download/save is disabled until the latest settings have been rendered.
+After Stop, the app renders a local review MP4 from the captured raw recording, trim range, FPS target, bitrate, and render-only voice mastering settings. Synthetic Pitch Lock extracts mono 48 kHz PCM locally, analyzes voiced pitch frames, resynthesizes the pitched layer toward a stable target note, then encodes the MP4 audio as AAC. Download/save is disabled until the latest settings have been rendered.
 
 In the browser, FFmpeg.wasm is lazy-loaded from bundled `@ffmpeg/ffmpeg`, `@ffmpeg/util`, and single-thread `@ffmpeg/core` assets. In Electron, the secure preload bridge exposes `renderMp4` and `saveMp4`; the main process writes temporary local input/output files and runs bundled FFmpeg with argument arrays, not shell string interpolation. Temporary directories are removed after render succeeds or fails.
 

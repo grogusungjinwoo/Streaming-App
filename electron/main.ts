@@ -5,6 +5,15 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  applySyntheticPitchLock,
+  buildVoiceMasteringFilter,
+  decodePcm16Wav,
+  encodePcm16Wav,
+  type VoiceMasteringFilterProfile,
+  type VoiceMasteringSettings,
+  type VoiceRenderDiagnostics
+} from "./audioMastering.js";
 
 type ExportPayload = {
   data: ArrayBuffer;
@@ -24,6 +33,7 @@ type RenderPayload = {
   videoBitsPerSecond: number;
   voicePatchStrength: number;
   perfectPopStrength: number;
+  voiceMastering: VoiceMasteringSettings;
 };
 
 type SavePayload = {
@@ -97,6 +107,12 @@ ipcMain.handle("streaming-app:export-mp4", async (_event, payload: ExportPayload
       videoBitsPerSecond: 6_000_000,
       voicePatchStrength: 0.65,
       perfectPopStrength: 0.75,
+      voiceMastering: {
+        mode: "broadcast",
+        masteringStrength: 0.78,
+        pitchLockAmount: 0,
+        frequencySculptor: { rumbleCut: 0.65, warmth: 0.45, presence: 0.5, harshness: 0.45, deCrackle: 0.65 }
+      },
       useTrim: false
     });
     return { canceled: false, filePath: saveResult.filePath };
@@ -110,14 +126,30 @@ ipcMain.handle("streaming-app:render-mp4", async (_event, payload: RenderPayload
   const safeExtension = payload.inputExtension === "mp4" ? "mp4" : "webm";
   const inputPath = path.join(tempDir, `input.${safeExtension}`);
   const outputPath = path.join(tempDir, "review.mp4");
+  const extractedAudioPath = path.join(tempDir, "voice-source.wav");
+  const masteredAudioPath = path.join(tempDir, "voice-mastered.wav");
+  let diagnostics: VoiceRenderDiagnostics | undefined;
+  let audioInputPath: string | undefined;
 
   try {
     await writeFile(inputPath, Buffer.from(payload.data));
-    await runFfmpeg(inputPath, outputPath, { ...payload, useTrim: true });
+    if (payload.voiceMastering.mode === "synthetic-pitch-lock") {
+      await extractAudioWav(inputPath, extractedAudioPath);
+      const decoded = decodePcm16Wav(await readFile(extractedAudioPath));
+      const mastered = applySyntheticPitchLock(decoded.samples, decoded.sampleRate, payload.voiceMastering);
+      await writeFile(masteredAudioPath, Buffer.from(encodePcm16Wav(mastered.samples, decoded.sampleRate)));
+      diagnostics = mastered.diagnostics;
+      audioInputPath = masteredAudioPath;
+    }
+    const filterProfile = await runFfmpeg(inputPath, outputPath, { ...payload, audioInputPath, useTrim: true });
+    if (diagnostics && filterProfile === "compatible") {
+      diagnostics = { ...diagnostics, appliedFilterProfile: `${diagnostics.appliedFilterProfile}-compatible` };
+    }
     const output = await readFile(outputPath);
     return {
       data: output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength),
-      mimeType: "video/mp4"
+      mimeType: "video/mp4",
+      diagnostics
     };
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -151,16 +183,54 @@ function runFfmpeg(
     videoBitsPerSecond: number;
     voicePatchStrength: number;
     perfectPopStrength: number;
+    voiceMastering: VoiceMasteringSettings;
+    audioInputPath?: string;
     useTrim: boolean;
   }
-): Promise<void> {
+): Promise<VoiceMasteringFilterProfile> {
   const ffmpegPath = ffmpegInstaller.path;
+  const advancedArgs = buildFfmpegProcessArgs(inputPath, outputPath, options, "advanced");
+
+  return spawnFfmpeg(ffmpegPath, advancedArgs)
+    .then(() => "advanced" as const)
+    .catch((error: Error) => {
+      if (options.voiceMastering.mode === "off" || !shouldRetryWithCompatibleFilter(error)) {
+        throw error;
+      }
+      return spawnFfmpeg(ffmpegPath, buildFfmpegProcessArgs(inputPath, outputPath, options, "compatible")).then(
+        () => "compatible" as const
+      );
+    });
+}
+
+function buildFfmpegProcessArgs(
+  inputPath: string,
+  outputPath: string,
+  options: {
+    trimRange: {
+      start: number;
+      end: number;
+    };
+    frameRate: number;
+    videoBitsPerSecond: number;
+    voicePatchStrength: number;
+    perfectPopStrength: number;
+    voiceMastering: VoiceMasteringSettings;
+    audioInputPath?: string;
+    useTrim: boolean;
+  },
+  voiceFilterProfile: VoiceMasteringFilterProfile
+): string[] {
   const trimDuration = Math.max(0, options.trimRange.end - options.trimRange.start);
   const args = [
     "-y",
     "-i",
     inputPath
   ];
+
+  if (options.audioInputPath) {
+    args.push("-i", options.audioInputPath);
+  }
 
   if (options.useTrim && trimDuration > 0) {
     args.push("-ss", formatSeconds(options.trimRange.start), "-t", formatSeconds(trimDuration));
@@ -172,7 +242,7 @@ function runFfmpeg(
     "-vf",
     "format=yuv420p",
     "-af",
-    buildAudioPatchFilter(options.voicePatchStrength, options.perfectPopStrength),
+    buildVoiceMasteringFilter(options.voiceMastering, voiceFilterProfile),
     "-c:v",
     "libx264",
     "-preset",
@@ -182,12 +252,25 @@ function runFfmpeg(
     "-c:a",
     "aac",
     "-b:a",
-    "160k",
+    "192k",
+    "-ar",
+    "48000",
+  );
+
+  if (options.audioInputPath) {
+    args.push("-map", "0:v:0?", "-map", "1:a:0", "-shortest");
+  }
+
+  args.push(
     "-movflags",
     "+faststart",
     outputPath
   );
 
+  return args;
+}
+
+function spawnFfmpeg(ffmpegPath: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpegPath, args, { windowsHide: true });
     let errorOutput = "";
@@ -208,44 +291,34 @@ function runFfmpeg(
   });
 }
 
-function buildAudioPatchFilter(strength: number, perfectPopStrength: number): string {
-  const safeStrength = Math.max(0, Math.min(strength, 1));
-  const safePerfectPopStrength = Math.max(0, Math.min(perfectPopStrength, 1));
-  if (safeStrength <= 0 && safePerfectPopStrength <= 0) return "anull";
-
-  const highpassFrequency = Math.round(85 + safePerfectPopStrength * 35);
-  const noiseFloor = Math.round(-20 - safeStrength * 12 - safePerfectPopStrength * 6);
-  const presenceGain = (1.5 + safeStrength * 2.5 + safePerfectPopStrength * 0.8).toFixed(1);
-  const compressorThreshold = Math.round(-16 - safeStrength * 10 - safePerfectPopStrength * 6);
-  const compressorRatio = (2 + safeStrength * 2.5 + safePerfectPopStrength * 1.3).toFixed(1);
-  const makeupGain = (1 + safeStrength * 1.2 + safePerfectPopStrength * 0.6).toFixed(1);
-  const filters = [
-    `highpass=f=${highpassFrequency}`,
-    `afftdn=nf=${noiseFloor}`
-  ];
-
-  if (safePerfectPopStrength > 0) {
-    const plosiveCut = (-(2 + safePerfectPopStrength * 5)).toFixed(1);
-    const harshnessCut = (-(0.8 + safePerfectPopStrength * 2.2)).toFixed(1);
-    const smootherThreshold = Math.round(-12 - safePerfectPopStrength * 10);
-    const smootherRatio = (1.6 + safePerfectPopStrength * 2.4).toFixed(1);
-
-    filters.push(
-      `equalizer=f=140:t=q:w=1:g=${plosiveCut}`,
-      `equalizer=f=5200:t=q:w=1.4:g=${harshnessCut}`,
-      `acompressor=threshold=${smootherThreshold}dB:ratio=${smootherRatio}:attack=3:release=90:makeup=1`
-    );
-  }
-
-  filters.push(
-    `equalizer=f=3200:t=q:w=1.1:g=${presenceGain}`,
-    `acompressor=threshold=${compressorThreshold}dB:ratio=${compressorRatio}:attack=8:release=160:makeup=${makeupGain}`,
-    "alimiter=limit=0.92"
-  );
-
-  return filters.join(",");
+function shouldRetryWithCompatibleFilter(error: Error): boolean {
+  return /No such filter|Error initializing filter|Failed to inject frame|Invalid argument/i.test(error.message);
 }
 
 function formatSeconds(value: number): string {
   return Number.isFinite(value) ? Math.max(0, value).toFixed(3).replace(/\.?0+$/, "") : "0";
+}
+
+function extractAudioWav(inputPath: string, outputPath: string): Promise<void> {
+  const ffmpegPath = ffmpegInstaller.path;
+  const args = ["-y", "-i", inputPath, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", outputPath];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, { windowsHide: true });
+    let errorOutput = "";
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      errorOutput += chunk.toString();
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`FFmpeg audio extraction failed with code ${code ?? "unknown"}: ${errorOutput.slice(-1200)}`));
+    });
+  });
 }

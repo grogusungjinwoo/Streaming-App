@@ -1,3 +1,5 @@
+import type { VoiceMasteringSettings, VoiceRenderDiagnostics } from "./voiceMasteringService";
+
 export type DesktopExportPayload = {
   data: ArrayBuffer;
   inputExtension: string;
@@ -21,6 +23,7 @@ export type DesktopRenderPayload = {
   videoBitsPerSecond: number;
   voicePatchStrength: number;
   perfectPopStrength: number;
+  voiceMastering: VoiceMasteringSettings;
 };
 
 export type DesktopExportResult = {
@@ -31,6 +34,7 @@ export type DesktopExportResult = {
 
 export type DesktopRenderResult = {
   data?: ArrayBuffer;
+  diagnostics?: VoiceRenderDiagnostics;
   canceled?: boolean;
   error?: string;
 };
